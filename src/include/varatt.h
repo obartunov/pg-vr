@@ -39,6 +39,59 @@ typedef struct varatt_external
 } varatt_external;
 
 /*
+ * varatt_vr is a "TOAST pointer" representing a Type-Aware Persistent Value
+ * Representation (VR) value.  Like varatt_external it is stored unaligned
+ * within a containing tuple and read via memcpy.
+ *
+ * vr_kind selects the value representation from the fixed in-core VrKind
+ * registry (access/value_representation.h).  vr_logical_size is the size of
+ * the logical value; vr_body_size is the size of the (uncompressed)
+ * representation body byte stream stored out-of-line in the substrate.
+ *
+ * varatt_vr and varatt_vr_inmem share a fixed header PREFIX, in this order:
+ *	   vr_kind, vr_version, vr_flags, vr_logical_size, vr_body_size.
+ * Only this prefix is consumed by vr_header_info(); the part after it (the
+ * substrate locator here, the body pointer in varatt_vr_inmem) is
+ * tag-specific and is NOT read through the shared prefix.
+ *
+ * Numeric tag and VrKind values are BRANCH-LOCAL on-disk constants: within
+ * this patch series they are not renumbered once data using them can exist;
+ * the final upstream numeric values remain subject to review.
+ */
+typedef struct varatt_vr
+{
+	uint8		vr_kind;		/* VrKind; on-disk constant */
+	uint8		vr_version;		/* representation format version */
+	uint16		vr_flags;		/* persistent flags; v1: writers set 0,
+								 * readers ERROR on unknown bits */
+	int32		vr_logical_size;	/* size of the logical value */
+	int32		vr_body_size;	/* size of body byte stream (uncompressed) */
+	Oid			vr_storage_oid;	/* substrate locator: TOAST relation (v1) */
+	Oid			vr_valueid;		/* substrate locator: value id within it */
+} varatt_vr;
+
+/*
+ * varatt_vr_inmem is the TRANSIENT, runtime-only in-memory form of a VR value,
+ * used on paths that must reconstruct a body outside live storage (notably
+ * logical decoding, where the body comes from the decode toast hash, not the
+ * live TOAST relation).  It shares the fixed header prefix with varatt_vr.
+ *
+ * INVARIANT: a VARTAG_VR_INMEM datum is readable and flattenable but NOT
+ * storable.  It must NEVER reach heap storage, a TOAST save, rewrite output,
+ * WAL as tuple data, or logical output as a stored datum.  The make / replace
+ * / rewrite / substrate-save paths must reject it.
+ */
+typedef struct varatt_vr_inmem
+{
+	uint8		vr_kind;
+	uint8		vr_version;
+	uint16		vr_flags;
+	int32		vr_logical_size;
+	int32		vr_body_size;
+	const char *vr_body;		/* in-memory body buffer (not owned here) */
+} varatt_vr_inmem;
+
+/*
  * These macros define the "saved size" portion of va_extinfo.  Its remaining
  * two high-order bits identify the compression method.
  */
@@ -86,7 +139,10 @@ typedef enum vartag_external
 	VARTAG_INDIRECT = 1,
 	VARTAG_EXPANDED_RO = 2,
 	VARTAG_EXPANDED_RW = 3,
-	VARTAG_ONDISK = 18
+	VARTAG_VR_INMEM = 4,		/* transient in-memory VR; never on disk */
+	VARTAG_ONDISK = 18,
+	VARTAG_VR = 19				/* persistent VR pointer; branch-local on-disk
+								 * value, final number subject to review */
 } vartag_external;
 
 /* Is a TOAST pointer either type of expanded-object pointer? */
@@ -107,6 +163,10 @@ VARTAG_SIZE(vartag_external tag)
 		return sizeof(varatt_expanded);
 	else if (tag == VARTAG_ONDISK)
 		return sizeof(varatt_external);
+	else if (tag == VARTAG_VR)
+		return sizeof(varatt_vr);
+	else if (tag == VARTAG_VR_INMEM)
+		return sizeof(varatt_vr_inmem);
 	else
 	{
 		Assert(false);
@@ -361,6 +421,29 @@ static inline bool
 VARATT_IS_EXTERNAL_ONDISK(const void *PTR)
 {
 	return VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_ONDISK;
+}
+
+/* Is varlena datum a persistent (on-disk) Value Representation pointer? */
+static inline bool
+VARATT_IS_EXTERNAL_VR(const void *PTR)
+{
+	return VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_VR;
+}
+
+/* Is varlena datum a TRANSIENT in-memory VR datum (invalid for storage)? */
+static inline bool
+VARATT_IS_VR_INMEM(const void *PTR)
+{
+	return VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_VR_INMEM;
+}
+
+/* Is varlena datum either form of VR datum (persistent or transient)? */
+static inline bool
+VARATT_IS_VR(const void *PTR)
+{
+	return VARATT_IS_EXTERNAL(PTR) &&
+		(VARTAG_EXTERNAL(PTR) == VARTAG_VR ||
+		 VARTAG_EXTERNAL(PTR) == VARTAG_VR_INMEM);
 }
 
 /* Is varlena datum an indirect pointer? */
