@@ -647,6 +647,24 @@ toast_raw_datum_size(Datum value)
 	{
 		result = EOH_get_flat_size(DatumGetEOHP(value));
 	}
+	else if (VARATT_IS_VR(attr))
+	{
+		VrHeaderInfo hdr;
+
+		/*
+		 * The raw (detoasted) size of a VR value is the logical value size
+		 * carried in its header, which -- like va_rawsize above -- includes
+		 * VARHDRSZ.  (The out-of-line body byte stream is a different
+		 * quantity; see toast_datum_size.)  Returning the header field keeps
+		 * this a cheap header read, and ensures a VR pointer never falls
+		 * through to VARSIZE(attr), which would misread a 1-byte-header
+		 * external pointer.  vr_header_info handles both the persistent and
+		 * the transient in-memory VR form.
+		 */
+		if (!vr_header_info(value, &hdr))
+			elog(ERROR, "invalid VR datum in toast_raw_datum_size");
+		result = hdr.logical_size;
+	}
 	else if (VARATT_IS_COMPRESSED(attr))
 	{
 		/* here, va_rawsize is just the payload size */
@@ -706,6 +724,32 @@ toast_datum_size(Datum value)
 	else if (VARATT_IS_EXTERNAL_EXPANDED(attr))
 	{
 		result = EOH_get_flat_size(DatumGetEOHP(value));
+	}
+	else if (VARATT_IS_VR(attr))
+	{
+		/*
+		 * Physical storage size of a VR value is its out-of-line body byte
+		 * stream (stored uncompressed), analogous to the external extsize for
+		 * an ONDISK pointer above; the VR pointer itself is not counted.  This
+		 * is a different quantity from the logical size in toast_raw_datum_size.
+		 * Read the body_size header field directly (it is not exposed through
+		 * VrHeaderInfo) for whichever VR form is present, so a VR pointer never
+		 * falls through to VARSIZE(attr).
+		 */
+		if (VARATT_IS_EXTERNAL_VR(attr))
+		{
+			varatt_vr	v;
+
+			VARATT_EXTERNAL_GET_POINTER(v, attr);
+			result = v.vr_body_size;
+		}
+		else
+		{
+			varatt_vr_inmem v;
+
+			VARATT_EXTERNAL_GET_POINTER(v, attr);
+			result = v.vr_body_size;
+		}
 	}
 	else if (VARATT_IS_SHORT(attr))
 	{

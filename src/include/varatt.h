@@ -64,7 +64,10 @@ typedef struct varatt_vr
 	uint8		vr_version;		/* representation format version */
 	uint16		vr_flags;		/* persistent flags; v1: writers set 0,
 								 * readers ERROR on unknown bits */
-	int32		vr_logical_size;	/* size of the logical value */
+	int32		vr_logical_size;	/* flattened logical VARSIZE, INCLUDING
+									 * VARHDRSZ (writer contract: set it to
+									 * VARSIZE of the flattened value; callers of
+									 * toast_raw_datum_size subtract VARHDRSZ) */
 	int32		vr_body_size;	/* size of body byte stream (uncompressed) */
 	Oid			vr_storage_oid;	/* substrate locator: TOAST relation (v1) */
 	Oid			vr_valueid;		/* substrate locator: value id within it */
