@@ -340,6 +340,19 @@ fill_val(CompactAttribute *att,
 			}
 			else
 			{
+				/*
+				 * A transient in-memory value representation (VARTAG_VR_INMEM)
+				 * is not storable: its body is an in-memory pointer that would
+				 * dangle once written to disk (or to WAL as tuple data).  Such a
+				 * value must be flattened before it reaches heap storage; reject
+				 * it here, at the point where an external pointer is copied into
+				 * the on-disk tuple image, rather than persist a dangling
+				 * pointer.  A persistent VARTAG_VR pointer is a valid on-disk
+				 * datum and is stored as-is.
+				 */
+				if (VARATT_IS_VR_INMEM(val))
+					elog(ERROR, "cannot store a transient in-memory value representation");
+
 				*infomask |= HEAP_HASEXTERNAL;
 				/* no alignment, since it's short by definition */
 				data_length = VARSIZE_EXTERNAL(val);
