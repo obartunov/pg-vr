@@ -823,6 +823,19 @@ logicalrep_write_tuple(StringInfo out, Relation rel, TupleTableSlot *slot,
 			continue;
 		}
 
+		/*
+		 * A value representation (VR) datum cannot be serialized to the logical
+		 * replication stream: its out-of-line body lives in the source's
+		 * storage and is not reconstructable on the subscriber.  Reached when
+		 * the value carried no in-transaction toast chunks (so reorderbuffer's
+		 * reassembly did not run); guard the wire boundary explicitly.  Not
+		 * reached today (nothing constructs a VR).
+		 */
+		if (att->attlen == -1 && VARATT_IS_VR(DatumGetPointer(values[i])))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("logical replication of a value representation is not supported")));
+
 		typtup = SearchSysCache1(TYPEOID, ObjectIdGetDatum(att->atttypid));
 		if (!HeapTupleIsValid(typtup))
 			elog(ERROR, "cache lookup failed for type %u", att->atttypid);

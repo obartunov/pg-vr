@@ -5159,6 +5159,21 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		if (!VARATT_IS_EXTERNAL(varlena_pointer))
 			continue;
 
+		/*
+		 * A value representation (VR) datum is external but is not a
+		 * varatt_external TOAST pointer; reading it as one below
+		 * (VARATT_EXTERNAL_GET_POINTER) would misinterpret its larger header as
+		 * a TOAST pointer and derive a bogus value id and raw size.  Nothing
+		 * constructs a persistent VR datum yet, so this is unreachable; guard
+		 * the boundary explicitly rather than misread.  Decode-local
+		 * reconstruction of a VR body (into a transient VARTAG_VR_INMEM, then
+		 * flatten) is deferred until construction and a first kind exist.
+		 */
+		if (VARATT_IS_VR(varlena_pointer))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("logical decoding of a value representation is not supported")));
+
 		VARATT_EXTERNAL_GET_POINTER(toast_pointer, varlena_pointer);
 
 		/*
