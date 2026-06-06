@@ -44,15 +44,19 @@
  * ordinary external value - here driven from the locator rather than from a
  * varatt_external pointer.
  *
- * is_speculative is false: a VR body is reclaimed under ordinary lifecycle
- * obligations (owning tuple deleted/vacuumed, or creating transaction
- * aborted), never as part of a speculative-insertion abort.  The speculative
- * path acts on the heap tuple's own external pointer, not on a VR locator.
+ * is_speculative is threaded through unchanged: a VR body that was written as
+ * part of a speculative insertion (INSERT ... ON CONFLICT) and is being
+ * aborted must be super-deleted with heap_abort_speculative, exactly like the
+ * TOAST chunks of an ordinary speculatively-inserted value; an ordinary
+ * lifecycle delete (owning tuple deleted/vacuumed, creating transaction
+ * aborted) uses a plain delete.  The body lives in an ordinary TOAST relation,
+ * so heap_abort_speculative applies to its chunks (it accepts toast
+ * relations).  toast_delete_chunks_by_id makes that choice from is_speculative.
  */
 void
-vr_toast_body_delete(Oid storage_oid, Oid valueid)
+vr_toast_body_delete(Oid storage_oid, Oid valueid, bool is_speculative)
 {
-	toast_delete_chunks_by_id(storage_oid, valueid, false);
+	toast_delete_chunks_by_id(storage_oid, valueid, is_speculative);
 }
 
 /*

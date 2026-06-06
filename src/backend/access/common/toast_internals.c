@@ -496,21 +496,16 @@ toast_delete_datum(Relation rel, Datum value, bool is_speculative)
 		 * ONDISK, so the ordinary branch above does not see it, and without
 		 * this the body would be orphaned.
 		 *
-		 * is_speculative is not propagated.  vr_toast_body_delete performs an
-		 * ordinary (non-speculative) chunk delete, which is correct because no
-		 * path constructs a persistent VR datum yet, so a VR value can never be
-		 * part of a speculative insertion.  Guard that boundary explicitly:
-		 * ERROR rather than reclaim a speculatively-inserted VR body with the
-		 * wrong semantics if construction is added before the speculative path
-		 * is handled.
+		 * is_speculative is propagated: a VR body written during a speculative
+		 * insertion that is being aborted must be super-deleted with
+		 * heap_abort_speculative, exactly like the TOAST chunks of an ordinary
+		 * speculatively-inserted value.  The body lives in an ordinary TOAST
+		 * relation, so that path applies to its chunks.
 		 */
-		if (is_speculative)
-			elog(ERROR, "speculative deletion of a VR value is not supported");
-
 		if (!vr_toast_get_locator(value, &loc))
 			elog(ERROR, "could not obtain VR locator for deletion");
 
-		vr_toast_body_delete(loc.storage_oid, loc.valueid);
+		vr_toast_body_delete(loc.storage_oid, loc.valueid, is_speculative);
 	}
 
 	/*

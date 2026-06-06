@@ -63,8 +63,11 @@ extern Size vr_toast_body_size(Datum stored_value);
 extern void vr_toast_body_read(Datum stored_value,
 							   Size offset, Size len, void *buf);
 
-/* Ownership release: delete body chunks by locator. */
-extern void vr_toast_body_delete(Oid storage_oid, Oid valueid);
+/* Ownership release: delete body chunks by locator.  is_speculative selects
+ * speculative super-deletion (heap_abort_speculative) vs. an ordinary delete,
+ * exactly as for an ordinary external value. */
+extern void vr_toast_body_delete(Oid storage_oid, Oid valueid,
+								 bool is_speculative);
 
 /*
  * Substrate-private locator.  Not exposed to type code via vr_header_info().
