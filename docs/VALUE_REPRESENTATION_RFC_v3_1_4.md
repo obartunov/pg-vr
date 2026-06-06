@@ -1817,7 +1817,7 @@ because the flat/VR transition policy belongs to the type/VR method.
 
 ### Inline budget is advisory
 
-`max_inline_size` / `inline_budget` is an advisory inline-budget hint from heap/TOAST sizing context. It is not a semantic threshold and not a hard VR limit. The method may use it, clamp it or ignore it. If the header name is still open, prefer `inline_budget` over `max_inline_size`.
+`inline_budget` (named `max_inline_size` in earlier drafts) is an advisory inline-budget hint from heap/TOAST sizing context. It is not a semantic threshold and not a hard VR limit. The method may use it, clamp it or ignore it. The header field name is settled as `inline_budget`; the code follows this.
 
 ### Persistent `vr_flags` are reserved-must-be-zero in v1
 
@@ -2426,13 +2426,13 @@ typedef struct VrMakeContext
      * Exact field names and contents are draft-only. v1 should keep this
      * minimal and avoid a new catalog object.
      */
-    Size            max_inline_size;
+    Size            inline_budget;
 } VrMakeContext;
 
 typedef struct VrReplaceContext
 {
     MemoryContext   mcxt;
-    Size            max_inline_size;
+    Size            inline_budget;
 } VrReplaceContext;
 
 /*
