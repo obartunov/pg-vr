@@ -224,11 +224,36 @@ toast_save_datum(Relation rel, Datum value,
 	{
 		/* rewrite case: check to see if value was in old toast table */
 		toast_pointer.va_valueid = InvalidOid;
-		if (oldexternal != NULL)
+
+		/*
+		 * oldexternal, when present, is either an ordinary on-disk TOAST
+		 * pointer or a persistent VR pointer; an indirect or expanded pointer
+		 * never reaches this save path.
+		 *
+		 * The transient in-memory VR form (VARTAG_VR_INMEM) must never appear
+		 * here as a stored old heap value: it is not storable and must be
+		 * rejected before any save/persistence path.  The invariant below uses
+		 * the persistent-only predicate VARATT_IS_EXTERNAL_VR, so a transient
+		 * VR reaching this point fails the assertion rather than being treated
+		 * as a valid prior value.
+		 */
+		Assert(oldexternal == NULL ||
+			   VARATT_IS_EXTERNAL_ONDISK(oldexternal) ||
+			   VARATT_IS_EXTERNAL_VR(oldexternal));
+
+		/*
+		 * Only an ordinary on-disk TOAST pointer may be reinterpreted as a
+		 * varatt_external for value-OID reuse.  A persistent Value
+		 * Representation (VR) pointer is a different on-disk struct
+		 * (varatt_vr); reading it as a varatt_external would pull a bogus
+		 * va_toastrelid/va_valueid and could reuse a wrong OID.  For any
+		 * non-ONDISK prior form (including VR) we fall through and assign a
+		 * fresh OID below.
+		 */
+		if (oldexternal != NULL && VARATT_IS_EXTERNAL_ONDISK(oldexternal))
 		{
 			varatt_external old_toast_pointer;
 
-			Assert(VARATT_IS_EXTERNAL_ONDISK(oldexternal));
 			/* Must copy to access aligned fields */
 			VARATT_EXTERNAL_GET_POINTER(old_toast_pointer, oldexternal);
 			if (old_toast_pointer.va_toastrelid == rel->rd_toastoid)
