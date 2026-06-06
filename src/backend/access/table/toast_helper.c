@@ -17,6 +17,7 @@
 #include "access/detoast.h"
 #include "access/toast_helper.h"
 #include "access/toast_internals.h"
+#include "access/vr_toast.h"
 #include "catalog/pg_type_d.h"
 #include "varatt.h"
 
@@ -67,16 +68,36 @@ toast_tuple_init(ToastTupleContext *ttc)
 				(varlena *) DatumGetPointer(ttc->ttc_values[i]);
 
 			/*
-			 * If the old value is stored on disk, check if it has changed so
-			 * we have to delete it later.
+			 * If the old value is stored out-of-line (ordinary on-disk TOAST,
+			 * or a persistent Value Representation), check whether it has
+			 * changed so we have to delete it later.  A persistent VR is
+			 * external but not ONDISK, so it must be admitted here explicitly;
+			 * otherwise its out-of-line body would be orphaned on UPDATE.
 			 */
 			if (att->attlen == -1 && !ttc->ttc_oldisnull[i] &&
-				VARATT_IS_EXTERNAL_ONDISK(old_value))
+				(VARATT_IS_EXTERNAL_ONDISK(old_value) ||
+				 VARATT_IS_EXTERNAL_VR(old_value)))
 			{
-				if (ttc->ttc_isnull[i] ||
-					!VARATT_IS_EXTERNAL_ONDISK(new_value) ||
-					memcmp(old_value, new_value,
-						   VARSIZE_EXTERNAL(old_value)) != 0)
+				bool		delete_old;
+
+				if (VARATT_IS_EXTERNAL_ONDISK(old_value))
+					delete_old = ttc->ttc_isnull[i] ||
+						!VARATT_IS_EXTERNAL_ONDISK(new_value) ||
+						memcmp(old_value, new_value,
+							   VARSIZE_EXTERNAL(old_value)) != 0;
+				else
+					/*
+					 * Persistent VR: the old body is still needed only if the
+					 * new value is a persistent VR denoting the SAME substrate
+					 * body (same storage_oid + valueid).  Otherwise the old
+					 * body is no longer referenced and must be reclaimed.
+					 */
+					delete_old = ttc->ttc_isnull[i] ||
+						!VARATT_IS_EXTERNAL_VR(new_value) ||
+						!vr_toast_same_body(ttc->ttc_oldvalues[i],
+											ttc->ttc_values[i]);
+
+				if (delete_old)
 				{
 					/*
 					 * The old external stored value isn't needed any more
@@ -330,7 +351,8 @@ toast_delete_external(Relation rel, const Datum *values, const bool *isnull,
 
 			if (isnull[i])
 				continue;
-			else if (VARATT_IS_EXTERNAL_ONDISK(DatumGetPointer(value)))
+			else if (VARATT_IS_EXTERNAL_ONDISK(DatumGetPointer(value)) ||
+					 VARATT_IS_EXTERNAL_VR(DatumGetPointer(value)))
 				toast_delete_datum(rel, value, is_speculative);
 		}
 	}

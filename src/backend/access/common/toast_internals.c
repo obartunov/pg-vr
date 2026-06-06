@@ -19,6 +19,7 @@
 #include "access/heaptoast.h"
 #include "access/table.h"
 #include "access/toast_internals.h"
+#include "access/vr_toast.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
 #include "miscadmin.h"
@@ -448,17 +449,50 @@ void
 toast_delete_datum(Relation rel, Datum value, bool is_speculative)
 {
 	varlena    *attr = (varlena *) DatumGetPointer(value);
-	varatt_external toast_pointer;
 
-	if (!VARATT_IS_EXTERNAL_ONDISK(attr))
-		return;
+	if (VARATT_IS_EXTERNAL_ONDISK(attr))
+	{
+		varatt_external toast_pointer;
 
-	/* Must copy to access aligned fields */
-	VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
+		/* Must copy to access aligned fields */
+		VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
 
-	toast_delete_chunks_by_id(toast_pointer.va_toastrelid,
-							  toast_pointer.va_valueid,
-							  is_speculative);
+		toast_delete_chunks_by_id(toast_pointer.va_toastrelid,
+								  toast_pointer.va_valueid,
+								  is_speculative);
+	}
+	else if (VARATT_IS_EXTERNAL_VR(attr))
+	{
+		VrToastLocator loc;
+
+		/*
+		 * A persistent Value Representation (VR) value owns an out-of-line body
+		 * in the substrate.  Reclaim it via its locator: VR is external but not
+		 * ONDISK, so the ordinary branch above does not see it, and without
+		 * this the body would be orphaned.
+		 *
+		 * is_speculative is not propagated.  vr_toast_body_delete performs an
+		 * ordinary (non-speculative) chunk delete, which is correct because no
+		 * path constructs a persistent VR datum yet, so a VR value can never be
+		 * part of a speculative insertion.  Guard that boundary explicitly:
+		 * ERROR rather than reclaim a speculatively-inserted VR body with the
+		 * wrong semantics if construction is added before the speculative path
+		 * is handled.
+		 */
+		if (is_speculative)
+			elog(ERROR, "speculative deletion of a VR value is not supported");
+
+		if (!vr_toast_get_locator(value, &loc))
+			elog(ERROR, "could not obtain VR locator for deletion");
+
+		vr_toast_body_delete(loc.storage_oid, loc.valueid);
+	}
+
+	/*
+	 * Any other datum (an ordinary inline value, or a transient in-memory VR
+	 * value VARTAG_VR_INMEM, which has no out-of-line body) has nothing to
+	 * delete here.
+	 */
 }
 
 /* ----------
