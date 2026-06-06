@@ -1,0 +1,4 @@
+comment = 'Decision probes for the Value Representation (VR) recognition/dispatch layer'
+default_version = '1.0'
+module_pathname = '$libdir/test_vr_decisions'
+relocatable = true

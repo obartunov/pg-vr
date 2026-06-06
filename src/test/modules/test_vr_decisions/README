@@ -1,0 +1,8 @@
+test_vr_decisions is a decision-probe module for the type-aware persistent
+Value Representation (VR) recognition/dispatch layer.
+
+It exposes the pure, catalog-free decisions VR makes -- which VrKind values are
+implemented (none in v1) and whether a datum is recognized as a VR (never, for
+an ordinary value) -- so a regression test can lock the v1 invariants without
+constructing a persistent VR datum, referencing any relation/TOAST value id, or
+performing any body save/delete.
