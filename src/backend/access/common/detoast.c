@@ -17,6 +17,7 @@
 #include "access/table.h"
 #include "access/tableam.h"
 #include "access/toast_internals.h"
+#include "access/value_representation.h"
 #include "common/int.h"
 #include "common/pg_lzcompress.h"
 #include "utils/expandeddatum.h"
@@ -28,6 +29,52 @@ static varlena *toast_fetch_datum_slice(varlena *attr,
 										int32 slicelength);
 static varlena *toast_decompress_datum(varlena *attr);
 static varlena *toast_decompress_datum_slice(varlena *attr, int32 slicelength);
+
+/* ----------
+ * vr_detoast_flatten -
+ *
+ *	Shared recognition and flatten for the two de-externalizing funnels
+ *	(detoast_attr and detoast_external_attr).  Reads the inline VR header,
+ *	rejects unknown persistent flag bits, looks up the kind's lifecycle
+ *	methods, and flattens the value via the method into the current memory
+ *	context, returning a non-extended flat varlena.
+ *
+ *	No VrKind has a methods-table entry yet, so vr_lookup_methods() returns
+ *	NULL for every kind and every call currently resolves to a hard ERROR.
+ *	That is the intended "fail loudly" recognition: it prevents a VR datum from
+ *	being silently misread as an ordinary varlena until a kind (and the code
+ *	that can first construct a persistent VR datum) exists.
+ * ----------
+ */
+static varlena *
+vr_detoast_flatten(varlena *attr)
+{
+	VrHeaderInfo hdr;
+	const ValueRepresentationMethods *methods;
+	varlena    *result;
+
+	/* caller guarantees VARATT_IS_VR(attr) */
+	if (!vr_header_info(PointerGetDatum(attr), &hdr))
+		elog(ERROR, "vr_detoast_flatten called on a non-VR datum");
+
+	/* v1 readers ERROR on unknown persistent flag bits */
+	if (hdr.flags != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("unsupported VR flags 0x%x", (unsigned int) hdr.flags)));
+
+	methods = vr_lookup_methods(hdr.kind);
+	if (methods == NULL || methods->flatten == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("unsupported VR kind %d", (int) hdr.kind)));
+
+	result = (varlena *) DatumGetPointer(methods->flatten(PointerGetDatum(attr),
+														  CurrentMemoryContext));
+	/* flatteners are not allowed to produce compressed/short output */
+	Assert(!VARATT_IS_EXTENDED(result));
+	return result;
+}
 
 /* ----------
  * detoast_external_attr -
@@ -89,6 +136,16 @@ detoast_external_attr(varlena *attr)
 		resultsize = EOH_get_flat_size(eoh);
 		result = (varlena *) palloc(resultsize);
 		EOH_flatten_into(eoh, result, resultsize);
+	}
+	else if (VARATT_IS_VR(attr))
+	{
+		/*
+		 * Type-Aware Value Representation: flatten via its kind's method, or
+		 * hard-ERROR for an unknown/unimplemented kind (see vr_detoast_flatten).
+		 * A VR value has no "de-externalized but still VR" intermediate, so its
+		 * only inlined form is the flattened logical value.
+		 */
+		result = vr_detoast_flatten(attr);
 	}
 	else
 	{
@@ -164,6 +221,14 @@ detoast_attr(varlena *attr)
 		attr = detoast_external_attr(attr);
 		/* flatteners are not allowed to produce compressed/short output */
 		Assert(!VARATT_IS_EXTENDED(attr));
+	}
+	else if (VARATT_IS_VR(attr))
+	{
+		/*
+		 * Type-Aware Value Representation: flatten via its kind's method, or
+		 * hard-ERROR for an unknown/unimplemented kind (see vr_detoast_flatten).
+		 */
+		attr = vr_detoast_flatten(attr);
 	}
 	else if (VARATT_IS_COMPRESSED(attr))
 	{
@@ -280,6 +345,18 @@ detoast_attr_slice(varlena *attr,
 	{
 		/* pass it off to detoast_external_attr to flatten */
 		preslice = detoast_external_attr(attr);
+	}
+	else if (VARATT_IS_VR(attr))
+	{
+		/*
+		 * Slice fetch over a VR body is not supported in v1: a VR value has no
+		 * externally addressable byte-slice semantics on this path.  Recognize
+		 * and hard-ERROR rather than fall through and misread the pointer.
+		 */
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("slice fetch is not supported for VR datums")));
+		preslice = attr;		/* unreachable; keep compiler quiet */
 	}
 	else
 		preslice = attr;
