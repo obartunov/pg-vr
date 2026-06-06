@@ -18,4 +18,6 @@ backend_sources += files(
   'toast_internals.c',
   'tupconvert.c',
   'tupdesc.c',
+  'vr.c',
+  'vr_toast.c',
 )

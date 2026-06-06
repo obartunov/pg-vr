@@ -367,16 +367,22 @@ toast_save_datum(Relation rel, Datum value,
 }
 
 /* ----------
- * toast_delete_datum -
+ * toast_delete_chunks_by_id -
  *
- *	Delete a single external stored value.
+ *	Delete all toast chunks of one value id from one toast relation.
+ *
+ *	Factored out of toast_delete_datum so the identical chunk-deletion
+ *	mechanism can be driven either from an ordinary varatt_external pointer
+ *	(toast_delete_datum) or from a VR substrate locator (vr_toast_body_delete),
+ *	without the VR path having to reinterpret a varatt_vr as a varatt_external.
+ *	Behavior is unchanged from the previously inlined version: same snapshot,
+ *	same lock modes, same speculative-abort vs. simple-delete choice, and the
+ *	toast-relation lock is held until commit.
  * ----------
  */
 void
-toast_delete_datum(Relation rel, Datum value, bool is_speculative)
+toast_delete_chunks_by_id(Oid toastrelid, Oid valueid, bool is_speculative)
 {
-	varlena    *attr = (varlena *) DatumGetPointer(value);
-	varatt_external toast_pointer;
 	Relation	toastrel;
 	Relation   *toastidxs;
 	ScanKeyData toastkey;
@@ -385,16 +391,10 @@ toast_delete_datum(Relation rel, Datum value, bool is_speculative)
 	int			num_indexes;
 	int			validIndex;
 
-	if (!VARATT_IS_EXTERNAL_ONDISK(attr))
-		return;
-
-	/* Must copy to access aligned fields */
-	VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
-
 	/*
 	 * Open the toast relation and its indexes
 	 */
-	toastrel = table_open(toast_pointer.va_toastrelid, RowExclusiveLock);
+	toastrel = table_open(toastrelid, RowExclusiveLock);
 
 	/* Fetch valid relation used for process */
 	validIndex = toast_open_indexes(toastrel,
@@ -408,7 +408,7 @@ toast_delete_datum(Relation rel, Datum value, bool is_speculative)
 	ScanKeyInit(&toastkey,
 				(AttrNumber) 1,
 				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(toast_pointer.va_valueid));
+				ObjectIdGetDatum(valueid));
 
 	/*
 	 * Find all the chunks.  (We don't actually care whether we see them in
@@ -436,6 +436,29 @@ toast_delete_datum(Relation rel, Datum value, bool is_speculative)
 	systable_endscan_ordered(toastscan);
 	toast_close_indexes(toastidxs, num_indexes, NoLock);
 	table_close(toastrel, NoLock);
+}
+
+/* ----------
+ * toast_delete_datum -
+ *
+ *	Delete a single external stored value.
+ * ----------
+ */
+void
+toast_delete_datum(Relation rel, Datum value, bool is_speculative)
+{
+	varlena    *attr = (varlena *) DatumGetPointer(value);
+	varatt_external toast_pointer;
+
+	if (!VARATT_IS_EXTERNAL_ONDISK(attr))
+		return;
+
+	/* Must copy to access aligned fields */
+	VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
+
+	toast_delete_chunks_by_id(toast_pointer.va_toastrelid,
+							  toast_pointer.va_valueid,
+							  is_speculative);
 }
 
 /* ----------
