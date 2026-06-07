@@ -70,6 +70,7 @@ vr_persist_make(Relation rel, AttrNumber attnum, Datum logical_value,
 	req.logical_size = VARHDRSZ + body_size;
 	req.body = VARDATA_ANY(flat);
 	req.body_size = body_size;
+	req.toast_options = 0;
 	req.mcxt = ctx->mcxt;
 
 	return vr_toast_body_save(&req);

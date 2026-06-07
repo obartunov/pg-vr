@@ -27,15 +27,55 @@ DELETE FROM t;
 VACUUM t;
 SELECT vr_persist_toast_count('t') AS toast_chunks_after_cleanup;
 
--- rewrite / cross-relation behaviour (explicit ERROR or proven safe)
+-- ===================================================================
+-- rewrite / repack coverage: a persistent VR is preserved across every
+-- heap rewrite path (body copied into the operation's target TOAST,
+-- locator rewritten), never flattened or refused.  Each step rechecks
+-- vr=1, vr_storage_ok=1 (homed in the target TOAST after the swap) and
+-- that flatten still returns the original bytes verbatim.
+-- ===================================================================
+ALTER TABLE t ADD PRIMARY KEY (id);   -- replica identity for REPACK (CONCURRENTLY)
 INSERT INTO t VALUES (3, decode(repeat('ab', 5000), 'hex'));
 SELECT vr_persist_probe('t');
+
 VACUUM FULL t;
-SELECT vr_persist_probe('t');
-CREATE TABLE t2 (id int, b bytea);
+SELECT 'after VACUUM FULL' AS step, vr_persist_probe('t');
+SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t WHERE id = 3;
+
+CLUSTER t USING t_pkey;
+SELECT 'after CLUSTER' AS step, vr_persist_probe('t');
+SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t WHERE id = 3;
+
+REPACK t;
+SELECT 'after REPACK' AS step, vr_persist_probe('t');
+SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t WHERE id = 3;
+
+REPACK (CONCURRENTLY) t;
+SELECT 'after REPACK (CONCURRENTLY)' AS step, vr_persist_probe('t');
+SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t WHERE id = 3;
+
+ALTER TABLE t ALTER COLUMN id TYPE bigint;   -- column type change forces full rewrite
+SELECT 'after ALTER rewrite' AS step, vr_persist_probe('t');
+SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t WHERE id = 3;
+
+-- the live relation owns its relocated body, no orphan from prior homes
+SELECT vr_persist_toast_count('t') > 0 AS has_relocated_body;
+
+-- CREATE TABLE AS: cross-relation copy into a fresh relation's TOAST
+CREATE TABLE t_ctas AS SELECT * FROM t;
+SELECT 'CTAS target' AS step, vr_persist_probe('t_ctas');
+SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t_ctas WHERE id = 3;
+
+-- cross-relation INSERT ... SELECT: copy into another relation's TOAST
+CREATE TABLE t2 (id bigint, b bytea);
 INSERT INTO t2 SELECT id, b FROM t;
+SELECT 'INSERT SELECT target' AS step, vr_persist_probe('t2');
 SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t2 WHERE id = 3;
 
+-- source still intact and still a persistent VR after the cross-rel copies
+SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t WHERE id = 3;
+SELECT vr_persist_probe('t');
+
 SELECT vr_persist_disarm();
-DROP TABLE t, t2;
+DROP TABLE t, t2, t_ctas;
 DROP EXTENSION vr_persist_smoke;
