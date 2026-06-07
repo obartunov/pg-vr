@@ -1,0 +1,5 @@
+# vr_persist_smoke extension
+comment = 'VR persistence backend v0 smoke (toaster-driven persistent VARTAG_VR)'
+default_version = '1.0'
+module_pathname = '$libdir/vr_persist_smoke'
+relocatable = true
