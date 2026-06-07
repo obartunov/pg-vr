@@ -55,6 +55,7 @@ SUBDIRS = \
 		  test_tidstore \
 		  test_vr_decisions \
 		  vr_core_smoke \
+		  vr_jsonb_cold_smoke \
 		  vr_persist_smoke \
 		  unsafe_tests \
 		  worker_spi \

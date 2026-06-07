@@ -1,0 +1,5 @@
+# vr_jsonb_cold_smoke extension
+comment = 'first real in-core VR user (jsonb cold-body) smoke'
+default_version = '1.0'
+module_pathname = '$libdir/vr_jsonb_cold_smoke'
+relocatable = true
