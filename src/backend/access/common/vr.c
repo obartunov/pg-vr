@@ -21,6 +21,7 @@
 
 #include "access/detoast.h"		/* VARATT_EXTERNAL_GET_POINTER */
 #include "access/value_representation.h"
+#include "fmgr.h"				/* pg_detoast_datum */
 
 /*
  * Static methods table, indexed by VrKind.
@@ -31,10 +32,71 @@
  * VR datum reaching a recognition path resolves to a hard ERROR in the caller
  * rather than a silent misread.
  */
+/*
+ * In-core VR_KIND_JSONB_COLD: the first real in-core VR user.
+ *
+ * Scope is deliberately narrow: store a large jsonb value's whole body as a
+ * persistent VR and return it byte-identical on read.  There is NO jsonb
+ * structural relocation and NO update optimization here; jsonb is treated as an
+ * opaque varlena.  "Byte-identical flatten" is well defined as the fully
+ * detoasted (decompressed, de-externalized) canonical jsonb binary: that is
+ * what an ordinary read of the column would yield, and what flatten() returns.
+ *
+ * Which jsonb values become cold is a selection-policy decision and is NOT made
+ * here: a selector (test harness today; a future in-core policy) opts a value
+ * into this kind, exactly as for any other kind.
+ */
+static Datum
+vr_jsonb_cold_make(Relation rel, AttrNumber attnum,
+				   Datum logical_value, const VrMakeContext *ctx)
+{
+	struct varlena *raw = (struct varlena *) DatumGetPointer(logical_value);
+	struct varlena *flat = pg_detoast_datum(raw);
+	Size		body_size = VARSIZE_ANY_EXHDR(flat);
+	Datum		result;
+
+	/*
+	 * Store the canonical (detoasted) jsonb body verbatim.  The selector is
+	 * responsible for the size policy; make() does not second-guess it.
+	 */
+	result = vr_make_save_body(rel, attnum, ctx,
+							   VR_KIND_JSONB_COLD, 1, 0,
+							   VARHDRSZ + body_size,
+							   VARDATA_ANY(flat), body_size);
+
+	if (flat != raw)
+		pfree(flat);
+
+	return result;
+}
+
+static Datum
+vr_jsonb_cold_flatten(Datum stored_value, MemoryContext cxt)
+{
+	Size		body_size = vr_body_size(stored_value);
+	MemoryContext old = MemoryContextSwitchTo(cxt);
+	struct varlena *result = (struct varlena *) palloc(VARHDRSZ + body_size);
+
+	SET_VARSIZE(result, VARHDRSZ + body_size);
+	MemoryContextSwitchTo(old);
+
+	if (body_size > 0)
+		vr_body_read(stored_value, 0, body_size, VARDATA(result));
+
+	return PointerGetDatum(result);
+}
+
+static const ValueRepresentationMethods vr_jsonb_cold_methods = {
+	.kind = VR_KIND_JSONB_COLD,
+	.write_version = 1,
+	.flatten = vr_jsonb_cold_flatten,
+	.make = vr_jsonb_cold_make,
+};
+
 static const ValueRepresentationMethods *const vr_methods_table[VR_KIND__COUNT] =
 {
 	[VR_KIND_INVALID] = NULL,
-	[VR_KIND_JSONB_COLD] = NULL,
+	[VR_KIND_JSONB_COLD] = &vr_jsonb_cold_methods,
 	[VR_KIND_TEST_VECTORS] = NULL,
 	[VR_KIND_BYTEA_BLOCK] = NULL,
 };

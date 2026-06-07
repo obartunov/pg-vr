@@ -3,10 +3,12 @@ CREATE EXTENSION test_vr_decisions;
 -- Dispatch decision: number of defined VrKind values (VR_KIND__COUNT).
 SELECT vr_decision_kind_count();
 
--- Dispatch decision: in v1 no kind is implemented, so every kind -- including
--- VR_KIND_INVALID (0) and out-of-range values -- resolves to NULL methods,
--- i.e. not implemented.  This locks the recognition-before-construction
--- invariant: nothing can yet construct a persistent VR datum.
+-- Dispatch decision: VR_KIND_JSONB_COLD (1) is the first in-core implemented
+-- kind, so it resolves to non-NULL methods; VR_KIND_INVALID (0), out-of-range
+-- values, and the not-yet-implemented kinds resolve to NULL methods.  A kind
+-- being implemented does not by itself construct anything: construction still
+-- requires a selector to opt a value in, preserving recognition-before-
+-- construction.
 SELECT k, vr_decision_kind_implemented(k) AS implemented
 FROM generate_series(-1, vr_decision_kind_count()) AS k
 ORDER BY k;
