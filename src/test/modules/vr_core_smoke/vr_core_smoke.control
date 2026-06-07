@@ -1,0 +1,5 @@
+# vr_core_smoke extension
+comment = 'storage-independent VR representation-contract smoke (VARTAG_VR_INMEM)'
+default_version = '1.0'
+module_pathname = '$libdir/vr_core_smoke'
+relocatable = true

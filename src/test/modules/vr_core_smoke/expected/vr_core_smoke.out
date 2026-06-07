@@ -1,0 +1,56 @@
+CREATE EXTENSION vr_core_smoke;
+-- construct -> recognize -> header -> size invariants -> flatten -> compare
+SELECT vr_core_roundtrip('\xdeadbeef0011223344556677'::bytea);
+                                          vr_core_roundtrip                                           
+------------------------------------------------------------------------------------------------------
+ is_vr=1 is_inmem=1 hdr=1 kind=2 ver=1 lsize=16 tds=12 trds=16 tds_ok=1 trds_ok=1 flat_len=12 match=1
+(1 row)
+
+SELECT vr_core_roundtrip('\x2a'::bytea);
+                                        vr_core_roundtrip                                         
+--------------------------------------------------------------------------------------------------
+ is_vr=1 is_inmem=1 hdr=1 kind=2 ver=1 lsize=5 tds=1 trds=5 tds_ok=1 trds_ok=1 flat_len=1 match=1
+(1 row)
+
+SELECT vr_core_roundtrip(''::bytea);
+                                        vr_core_roundtrip                                         
+--------------------------------------------------------------------------------------------------
+ is_vr=1 is_inmem=1 hdr=1 kind=2 ver=1 lsize=4 tds=0 trds=4 tds_ok=1 trds_ok=1 flat_len=0 match=1
+(1 row)
+
+SELECT vr_core_roundtrip(decode(repeat('ab', 2000), 'hex'));
+                                              vr_core_roundtrip                                               
+--------------------------------------------------------------------------------------------------------------
+ is_vr=1 is_inmem=1 hdr=1 kind=2 ver=1 lsize=2004 tds=2000 trds=2004 tds_ok=1 trds_ok=1 flat_len=2000 match=1
+(1 row)
+
+-- binary-safe body: all 256 byte values 0x00..0xff
+SELECT vr_core_roundtrip(decode(string_agg(lpad(to_hex(g), 2, '0'), '' ORDER BY g), 'hex'))
+  FROM generate_series(0, 255) g;
+                                            vr_core_roundtrip                                             
+----------------------------------------------------------------------------------------------------------
+ is_vr=1 is_inmem=1 hdr=1 kind=2 ver=1 lsize=260 tds=256 trds=260 tds_ok=1 trds_ok=1 flat_len=256 match=1
+(1 row)
+
+-- recognition must not false-positive on an ordinary varlena
+SELECT vr_core_isvr('\xdeadbeef'::bytea) AS ordinary_is_vr;
+ ordinary_is_vr 
+----------------
+ f
+(1 row)
+
+-- error boundaries
+SELECT vr_core_badkind();      -- unknown / unregistered kind
+ERROR:  unsupported VR kind 3
+SELECT vr_core_badflags();     -- unknown persistent flag bit
+ERROR:  unsupported VR flags 0x1
+SELECT vr_core_badregister();  -- wrong-kind registration must be rejected
+ERROR:  vr_register_test_methods: methods declared for kind 1, expected VR_KIND_TEST_VECTORS
+-- the rejected wrong-kind registration must not corrupt the slot
+SELECT vr_core_roundtrip('\x99'::bytea);
+                                        vr_core_roundtrip                                         
+--------------------------------------------------------------------------------------------------
+ is_vr=1 is_inmem=1 hdr=1 kind=2 ver=1 lsize=5 tds=1 trds=5 tds_ok=1 trds_ok=1 flat_len=1 match=1
+(1 row)
+
+DROP EXTENSION vr_core_smoke;

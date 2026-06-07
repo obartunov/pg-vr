@@ -54,6 +54,7 @@ SUBDIRS = \
 		  test_slru \
 		  test_tidstore \
 		  test_vr_decisions \
+		  vr_core_smoke \
 		  unsafe_tests \
 		  worker_spi \
 		  xid_wraparound
