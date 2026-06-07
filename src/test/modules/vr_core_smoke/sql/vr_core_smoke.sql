@@ -15,7 +15,8 @@ SELECT vr_core_isvr('\xdeadbeef'::bytea) AS ordinary_is_vr;
 -- error boundaries
 SELECT vr_core_badkind();      -- unknown / unregistered kind
 SELECT vr_core_badflags();     -- unknown persistent flag bit
-SELECT vr_core_badregister();  -- wrong-kind registration must be rejected
+SELECT vr_core_badregister();  -- invalid-kind registration must be rejected
+SELECT vr_core_dupregister();  -- duplicate registration must be rejected
 
 -- the rejected wrong-kind registration must not corrupt the slot
 SELECT vr_core_roundtrip('\x99'::bytea);

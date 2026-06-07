@@ -44,8 +44,10 @@ SELECT vr_core_badkind();      -- unknown / unregistered kind
 ERROR:  unsupported VR kind 3
 SELECT vr_core_badflags();     -- unknown persistent flag bit
 ERROR:  unsupported VR flags 0x1
-SELECT vr_core_badregister();  -- wrong-kind registration must be rejected
-ERROR:  vr_register_test_methods: methods declared for kind 1, expected VR_KIND_TEST_VECTORS
+SELECT vr_core_badregister();  -- invalid-kind registration must be rejected
+ERROR:  vr_register_methods: invalid VR kind 0
+SELECT vr_core_dupregister();  -- duplicate registration must be rejected
+ERROR:  vr_register_methods: methods already registered for VR kind 2
 -- the rejected wrong-kind registration must not corrupt the slot
 SELECT vr_core_roundtrip('\x99'::bytea);
                                         vr_core_roundtrip                                         

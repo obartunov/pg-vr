@@ -40,11 +40,15 @@ static const ValueRepresentationMethods *const vr_methods_table[VR_KIND__COUNT] 
 };
 
 /*
- * Test-only registration slot for VR_KIND_TEST_VECTORS.  Separate from the
- * const methods table above so production kinds stay immutable.  Installed at
- * module load by a test, cleared with NULL.  No dynamic kind, no catalog.
+ * Runtime registration slots, one per fixed VrKind.  Separate from the const
+ * table above so any compile-time production kinds stay immutable.  Filled by
+ * vr_register_methods() at module load (a type's init or a test).  No dynamic
+ * kind, no catalog, no DDL.
  */
-static const ValueRepresentationMethods *vr_test_vectors_methods = NULL;
+static const ValueRepresentationMethods *vr_registered_methods[VR_KIND__COUNT] =
+{
+	[VR_KIND_INVALID] = NULL,
+};
 
 /*
  * VR kind selector hook.  Default NULL = no value is ever VR-backed; the TOAST
@@ -53,14 +57,32 @@ static const ValueRepresentationMethods *vr_test_vectors_methods = NULL;
  */
 vr_kind_selector_hook_type vr_kind_selector_hook = NULL;
 
+/*
+ * vr_register_methods
+ *
+ * Narrow fixed-kind registration: install lifecycle methods for methods->kind.
+ * The kind must be a valid fixed VrKind (not VR_KIND_INVALID, in range) and
+ * must not already have methods compiled in or previously registered.  This is
+ * the single production-shaped registration seam; there is no dynamic kind
+ * allocation, catalog, or DDL.
+ */
 void
-vr_register_test_methods(const ValueRepresentationMethods *methods)
+vr_register_methods(const ValueRepresentationMethods *methods)
 {
-	if (methods != NULL && methods->kind != VR_KIND_TEST_VECTORS)
-		elog(ERROR,
-			 "vr_register_test_methods: methods declared for kind %d, expected VR_KIND_TEST_VECTORS",
-			 (int) methods->kind);
-	vr_test_vectors_methods = methods;
+	VrKind		kind;
+
+	if (methods == NULL)
+		elog(ERROR, "vr_register_methods: NULL methods");
+
+	kind = methods->kind;
+	if (kind <= VR_KIND_INVALID || kind >= VR_KIND__COUNT)
+		elog(ERROR, "vr_register_methods: invalid VR kind %d", (int) kind);
+
+	if (vr_methods_table[kind] != NULL || vr_registered_methods[kind] != NULL)
+		elog(ERROR, "vr_register_methods: methods already registered for VR kind %d",
+			 (int) kind);
+
+	vr_registered_methods[kind] = methods;
 }
 
 /*
@@ -75,8 +97,8 @@ vr_lookup_methods(VrKind kind)
 {
 	if (kind <= VR_KIND_INVALID || kind >= VR_KIND__COUNT)
 		return NULL;
-	if (kind == VR_KIND_TEST_VECTORS && vr_test_vectors_methods != NULL)
-		return vr_test_vectors_methods;
+	if (vr_registered_methods[kind] != NULL)
+		return vr_registered_methods[kind];
 	return vr_methods_table[kind];
 }
 

@@ -22,6 +22,11 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'vr_core_badregister'
 LANGUAGE C;
 
+CREATE FUNCTION vr_core_dupregister()
+RETURNS void
+AS 'MODULE_PATHNAME', 'vr_core_dupregister'
+LANGUAGE C;
+
 CREATE FUNCTION vr_core_isvr(payload bytea)
 RETURNS bool
 AS 'MODULE_PATHNAME', 'vr_core_isvr'

@@ -69,7 +69,7 @@ static const ValueRepresentationMethods vr_test_methods = {
 void
 _PG_init(void)
 {
-	vr_register_test_methods(&vr_test_methods);
+	vr_register_methods(&vr_test_methods);
 }
 
 /*
@@ -180,9 +180,9 @@ vr_core_badflags(PG_FUNCTION_ARGS)
 /*
  * vr_core_badregister() RETURNS void
  *
- * The registration seam must reject methods declared for any kind other than
- * VR_KIND_TEST_VECTORS.  Try to register a wrong-kind table; the slot must be
- * left unchanged (the guard ERRORs before assignment).
+ * The registration seam must reject an invalid kind.  Try to register methods
+ * declared for VR_KIND_INVALID; vr_register_methods() ERRORs before touching
+ * any slot.
  */
 PG_FUNCTION_INFO_V1(vr_core_badregister);
 
@@ -190,12 +190,29 @@ Datum
 vr_core_badregister(PG_FUNCTION_ARGS)
 {
 	static const ValueRepresentationMethods wrong = {
-		.kind = VR_KIND_JSONB_COLD,
+		.kind = VR_KIND_INVALID,
 		.write_version = 1,
 		.flatten = vr_test_flatten,
 	};
 
-	vr_register_test_methods(&wrong);	/* expect ERROR: wrong kind */
+	vr_register_methods(&wrong);	/* expect ERROR: invalid VR kind */
+
+	PG_RETURN_VOID();
+}
+
+/*
+ * vr_core_dupregister() RETURNS void
+ *
+ * The registration seam must reject a second registration for a kind that is
+ * already registered.  VR_KIND_TEST_VECTORS was registered at module load, so
+ * re-registering it ERRORs (duplicate), again before touching the slot.
+ */
+PG_FUNCTION_INFO_V1(vr_core_dupregister);
+
+Datum
+vr_core_dupregister(PG_FUNCTION_ARGS)
+{
+	vr_register_methods(&vr_test_methods);	/* expect ERROR: already registered */
 
 	PG_RETURN_VOID();
 }

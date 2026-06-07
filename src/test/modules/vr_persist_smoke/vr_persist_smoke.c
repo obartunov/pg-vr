@@ -120,7 +120,7 @@ vr_persist_selector(Relation rel, AttrNumber attnum, Datum flat_value,
 void
 _PG_init(void)
 {
-	vr_register_test_methods(&vr_persist_methods);
+	vr_register_methods(&vr_persist_methods);
 	vr_kind_selector_hook = vr_persist_selector;
 }
 
