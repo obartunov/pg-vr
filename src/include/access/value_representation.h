@@ -243,4 +243,22 @@ extern const ValueRepresentationMethods *vr_lookup_methods(VrKind kind);
  */
 extern void vr_register_test_methods(const ValueRepresentationMethods *methods);
 
+/*
+ * VR kind selector hook.
+ *
+ * Consulted by the TOAST externalization path when a flat logical value is
+ * about to be pushed out of line.  It returns a candidate VrKind for the
+ * (relation, attribute, value) context, or VR_KIND_INVALID for "no VR" (the
+ * default with no hook installed).  The chosen kind's vtable make() then
+ * performs the actual construction and may still decline; on decline or an
+ * unknown kind/method the externalizer falls back to ordinary on-disk TOAST.
+ *
+ * The selector receives the flat value so the decision can be value-aware
+ * (e.g. size-gated), not keyed on (relation, attribute) alone.
+ */
+typedef VrKind (*vr_kind_selector_hook_type) (Relation rel, AttrNumber attnum,
+											   Datum flat_value,
+											   const VrMakeContext *ctx);
+extern PGDLLIMPORT vr_kind_selector_hook_type vr_kind_selector_hook;
+
 #endif							/* VALUE_REPRESENTATION_H */
