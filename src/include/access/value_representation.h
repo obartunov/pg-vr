@@ -125,6 +125,13 @@ typedef struct VrMakeContext
 	 * should not be VR-backed, but final policy belongs to the type method.
 	 */
 	Size		inline_budget;
+
+	/*
+	 * TOAST/heap-insert option bits for the externalize that triggered this
+	 * make(); passed through to the body writer so a VR born during a heap
+	 * rewrite inherits HEAP_INSERT_NO_LOGICAL.  0 for an ordinary insert.
+	 */
+	int			toast_options;
 } VrMakeContext;
 
 typedef struct VrReplaceContext
@@ -250,6 +257,26 @@ extern const ValueRepresentationMethods *vr_lookup_methods(VrKind kind);
  * same way.
  */
 extern void vr_register_methods(const ValueRepresentationMethods *methods);
+
+/*
+ * make()-time body writer.
+ *
+ * A kind's make() builds the representation body in memory and calls this to
+ * persist it: the substrate writes the body into rel's TOAST and returns the
+ * assembled persistent VR datum (VARTAG_VR) carrying the given
+ * kind/version/flags/logical_size plus the substrate locator.  This is the only
+ * body-save entry a method needs, so a method implementation does not include
+ * the private substrate header.  ctx supplies the memory context and the
+ * pass-through TOAST options (HEAP_INSERT_NO_LOGICAL during a rewrite).
+ *
+ * The matching read side is already public above: vr_body_size() /
+ * vr_body_read().
+ */
+extern Datum vr_make_save_body(Relation rel, AttrNumber attnum,
+							   const VrMakeContext *ctx,
+							   VrKind kind, uint8 version, uint16 flags,
+							   Size logical_size,
+							   const void *body, Size body_size);
 
 /*
  * VR kind selector hook.

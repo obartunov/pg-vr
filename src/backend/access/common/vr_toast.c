@@ -179,6 +179,42 @@ vr_toast_body_save(const VrBodySaveRequest *req)
 }
 
 /*
+ * vr_make_save_body
+ *
+ * Public make()-time body writer (declared in value_representation.h).  A
+ * kind's make() builds the body in memory and calls this to persist it without
+ * touching the private VrBodySaveRequest substrate struct: assemble the request
+ * here from the make context and the supplied header fields, and return the
+ * persistent VR datum produced by the substrate writer.  toast_options come
+ * from the make context so a VR born during a heap rewrite inherits the heap's
+ * HEAP_INSERT_NO_LOGICAL policy.
+ */
+Datum
+vr_make_save_body(Relation rel, AttrNumber attnum,
+				  const VrMakeContext *ctx,
+				  VrKind kind, uint8 version, uint16 flags,
+				  Size logical_size,
+				  const void *body, Size body_size)
+{
+	VrBodySaveRequest req;
+
+	Assert(ctx != NULL);
+
+	req.rel = rel;
+	req.attnum = attnum;
+	req.kind = kind;
+	req.version = version;
+	req.flags = flags;
+	req.logical_size = logical_size;
+	req.body = body;
+	req.body_size = body_size;
+	req.toast_options = ctx->toast_options;
+	req.mcxt = ctx->mcxt;
+
+	return vr_toast_body_save(&req);
+}
+
+/*
  * vr_toast_body_copy_to_relation
  *
  * Per-tuple safe relocate for a heap rewrite (VACUUM FULL, CLUSTER, REPACK) or

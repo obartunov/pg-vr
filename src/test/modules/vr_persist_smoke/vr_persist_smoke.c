@@ -14,9 +14,11 @@
  * make() is value-aware and declines small values, which fall back to ordinary
  * on-disk TOAST.
  *
- * This is a TEST module and is the sanctioned exception to the rule that type
- * code must not include access/vr_toast.h: it stands in for a not-yet-existing
- * production type's make() and drives the substrate body writer directly.
+ * This is a TEST module standing in for a not-yet-existing production type's
+ * make(): it registers VR_KIND_TEST_VECTORS lifecycle methods through
+ * vr_register_methods() and saves the body through the public
+ * vr_make_save_body() helper, so it does not include the private substrate
+ * header access/vr_toast.h.
  *
  * IDENTIFICATION
  *	  src/test/modules/vr_persist_smoke/vr_persist_smoke.c
@@ -29,7 +31,6 @@
 #include "access/table.h"
 #include "access/tableam.h"
 #include "access/value_representation.h"
-#include "access/vr_toast.h"	/* test-only: substrate body writer */
 #include "executor/tuptable.h"
 #include "fmgr.h"
 #include "lib/stringinfo.h"
@@ -57,23 +58,14 @@ vr_persist_make(Relation rel, AttrNumber attnum, Datum logical_value,
 {
 	struct varlena *flat = (struct varlena *) DatumGetPointer(logical_value);
 	Size		body_size = VARSIZE_ANY_EXHDR(flat);
-	VrBodySaveRequest req;
 
 	if (body_size < VR_PERSIST_MIN_BODY)
 		return logical_value;	/* decline -> ordinary TOAST */
 
-	req.rel = rel;
-	req.attnum = attnum;
-	req.kind = VR_KIND_TEST_VECTORS;
-	req.version = 1;
-	req.flags = 0;
-	req.logical_size = VARHDRSZ + body_size;
-	req.body = VARDATA_ANY(flat);
-	req.body_size = body_size;
-	req.toast_options = 0;
-	req.mcxt = ctx->mcxt;
-
-	return vr_toast_body_save(&req);
+	return vr_make_save_body(rel, attnum, ctx,
+							 VR_KIND_TEST_VECTORS, 1, 0,
+							 VARHDRSZ + body_size,
+							 VARDATA_ANY(flat), body_size);
 }
 
 /*

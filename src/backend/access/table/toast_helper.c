@@ -372,6 +372,7 @@ toast_tuple_externalize(ToastTupleContext *ttc, int attribute, uint32 options)
 
 		mctx.mcxt = CurrentMemoryContext;
 		mctx.inline_budget = 0;
+		mctx.toast_options = options;
 		kind = vr_kind_selector_hook(ttc->ttc_rel, (AttrNumber) (attribute + 1),
 									 old_value, &mctx);
 		if (kind != VR_KIND_INVALID)
