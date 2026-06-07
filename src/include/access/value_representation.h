@@ -234,4 +234,13 @@ typedef struct ValueRepresentationMethods
  */
 extern const ValueRepresentationMethods *vr_lookup_methods(VrKind kind);
 
+/*
+ * Test-only registration seam.  Installs (or with NULL clears) the lifecycle
+ * methods for the single fixed kind VR_KIND_TEST_VECTORS, so storage-independent
+ * tests can exercise the VR representation contract without a catalog, DDL, a
+ * provider framework, or dynamic kind allocation.  Rejects methods declared for
+ * any other kind.
+ */
+extern void vr_register_test_methods(const ValueRepresentationMethods *methods);
+
 #endif							/* VALUE_REPRESENTATION_H */

@@ -40,6 +40,23 @@ static const ValueRepresentationMethods *const vr_methods_table[VR_KIND__COUNT] 
 };
 
 /*
+ * Test-only registration slot for VR_KIND_TEST_VECTORS.  Separate from the
+ * const methods table above so production kinds stay immutable.  Installed at
+ * module load by a test, cleared with NULL.  No dynamic kind, no catalog.
+ */
+static const ValueRepresentationMethods *vr_test_vectors_methods = NULL;
+
+void
+vr_register_test_methods(const ValueRepresentationMethods *methods)
+{
+	if (methods != NULL && methods->kind != VR_KIND_TEST_VECTORS)
+		elog(ERROR,
+			 "vr_register_test_methods: methods declared for kind %d, expected VR_KIND_TEST_VECTORS",
+			 (int) methods->kind);
+	vr_test_vectors_methods = methods;
+}
+
+/*
  * vr_lookup_methods
  *
  * Static, catalog-free dispatch from a VrKind to its lifecycle methods.
@@ -51,6 +68,8 @@ vr_lookup_methods(VrKind kind)
 {
 	if (kind <= VR_KIND_INVALID || kind >= VR_KIND__COUNT)
 		return NULL;
+	if (kind == VR_KIND_TEST_VECTORS && vr_test_vectors_methods != NULL)
+		return vr_test_vectors_methods;
 	return vr_methods_table[kind];
 }
 
