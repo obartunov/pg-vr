@@ -46,6 +46,13 @@ static const ValueRepresentationMethods *const vr_methods_table[VR_KIND__COUNT] 
  */
 static const ValueRepresentationMethods *vr_test_vectors_methods = NULL;
 
+/*
+ * VR kind selector hook.  Default NULL = no value is ever VR-backed; the TOAST
+ * externalizer behaves exactly as stock.  A backend (e.g. a type or a test)
+ * installs a selector to opt specific values into a VR representation.
+ */
+vr_kind_selector_hook_type vr_kind_selector_hook = NULL;
+
 void
 vr_register_test_methods(const ValueRepresentationMethods *methods)
 {

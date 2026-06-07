@@ -279,10 +279,53 @@ toast_tuple_externalize(ToastTupleContext *ttc, int attribute, uint32 options)
 	Datum	   *value = &ttc->ttc_values[attribute];
 	Datum		old_value = *value;
 	ToastAttrInfo *attr = &ttc->ttc_attr[attribute];
+	Datum		new_value = (Datum) 0;
+	bool		made = false;
 
 	attr->tai_colflags |= TOASTCOL_IGNORE;
-	*value = toast_save_datum(ttc->ttc_rel, old_value, attr->tai_oldexternal,
-							  options);
+
+	/*
+	 * Value Representation producer.  If a selector opts this flat value into a
+	 * VR kind whose vtable make() accepts it, the value is born here as a
+	 * persistent VARTAG_VR - its body saved into this relation's own TOAST
+	 * storage, so storage_oid == reltoastrelid - instead of an ordinary on-disk
+	 * pointer.  make() may decline; on decline or an unknown kind/method we fall
+	 * back to ordinary TOAST.
+	 */
+	if (vr_kind_selector_hook != NULL)
+	{
+		VrMakeContext mctx;
+		VrKind		kind;
+
+		mctx.mcxt = CurrentMemoryContext;
+		mctx.inline_budget = 0;
+		kind = vr_kind_selector_hook(ttc->ttc_rel, (AttrNumber) (attribute + 1),
+									 old_value, &mctx);
+		if (kind != VR_KIND_INVALID)
+		{
+			const ValueRepresentationMethods *m = vr_lookup_methods(kind);
+
+			if (m != NULL && m->make != NULL)
+			{
+				Datum		d = m->make(ttc->ttc_rel,
+										(AttrNumber) (attribute + 1),
+										old_value, &mctx);
+
+				if (VARATT_IS_EXTERNAL_VR(DatumGetPointer(d)))
+				{
+					new_value = d;
+					made = true;
+				}
+				/* else: make() declined -> fall back to ordinary TOAST */
+			}
+		}
+	}
+
+	if (!made)
+		new_value = toast_save_datum(ttc->ttc_rel, old_value,
+									 attr->tai_oldexternal, options);
+
+	*value = new_value;
 	if ((attr->tai_colflags & TOASTCOL_NEEDS_FREE) != 0)
 		pfree(DatumGetPointer(old_value));
 	attr->tai_colflags |= TOASTCOL_NEEDS_FREE;
