@@ -34,6 +34,7 @@
 #include "access/detoast.h"			/* VARATT_EXTERNAL_GET_POINTER */
 #include "access/toast_internals.h" /* toast_delete_chunks_by_id */
 #include "access/vr_toast.h"
+#include "utils/rel.h"			/* RelationData->rd_rel->reltoastrelid */
 #include "varatt.h"
 
 /*
@@ -151,7 +152,8 @@ vr_toast_body_save(const VrBodySaveRequest *req)
 		memcpy(VARDATA(tmp), req->body, req->body_size);
 
 	/* Core writer: allocates value id, writes chunks into rel's TOAST rel. */
-	ext_datum = toast_save_datum(req->rel, PointerGetDatum(tmp), NULL, 0);
+	ext_datum = toast_save_datum(req->rel, PointerGetDatum(tmp), NULL,
+								 req->toast_options);
 	ext = (struct varlena *) DatumGetPointer(ext_datum);
 	Assert(VARATT_IS_EXTERNAL_ONDISK(ext));
 	VARATT_EXTERNAL_GET_POINTER(ve, ext);
@@ -174,6 +176,71 @@ vr_toast_body_save(const VrBodySaveRequest *req)
 	pfree(ext);
 
 	return PointerGetDatum(result);
+}
+
+/*
+ * vr_toast_body_copy_to_relation
+ *
+ * Per-tuple safe relocate for a heap rewrite (VACUUM FULL, CLUSTER, REPACK) or
+ * a cross-relation movement: read the old VR body verbatim from its current
+ * storage and save a fresh copy into new_rel's TOAST relation, returning a new
+ * persistent VARTAG_VR whose locator names new_rel's reltoastrelid.  The
+ * kind/version/flags/logical_size/body_size header fields are preserved.
+ *
+ * Copy, not move: the OLD body is NOT deleted here.  Its lifetime stays with
+ * its original owner - on a heap rewrite the old relfilenode and its TOAST
+ * relation are dropped at the swap, reclaiming the old body; on a cross-
+ * relation copy the source row still references and owns it.  This never
+ * produces a silent pointer copy into incompatible TOAST storage: the body is
+ * physically re-written into new_rel.
+ *
+ * ctx->toast_options carries the surrounding heap-insert options (notably
+ * HEAP_INSERT_NO_LOGICAL during a rewrite) so the copied body chunks honour the
+ * same WAL/logical-decoding policy as the heap tuple they belong to.
+ */
+Datum
+vr_toast_body_copy_to_relation(Datum old_stored, Relation new_rel,
+							   AttrNumber attnum, const VrRewriteContext *ctx)
+{
+	struct varlena *old = (struct varlena *) DatumGetPointer(old_stored);
+	varatt_vr	v;
+	Size		body_size;
+	char	   *body;
+	VrBodySaveRequest req;
+	Datum		result;
+
+	Assert(VARATT_IS_EXTERNAL_VR(old));
+	Assert(new_rel != NULL);
+	Assert(ctx != NULL);
+
+	if (!OidIsValid(new_rel->rd_rel->reltoastrelid))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot relocate a value representation: target relation has no TOAST storage")));
+
+	VARATT_EXTERNAL_GET_POINTER(v, old);
+	body_size = (Size) v.vr_body_size;
+
+	/* Read the old body verbatim from its current (source) storage. */
+	body = (char *) palloc(body_size > 0 ? body_size : 1);
+	vr_toast_body_read(old_stored, 0, body_size, body);
+
+	/* Save a fresh, independent copy into the target relation's TOAST. */
+	req.rel = new_rel;
+	req.attnum = attnum;
+	req.kind = (VrKind) v.vr_kind;
+	req.version = v.vr_version;
+	req.flags = v.vr_flags;
+	req.logical_size = (Size) v.vr_logical_size;
+	req.body = body;
+	req.body_size = body_size;
+	req.toast_options = ctx->toast_options;
+	req.mcxt = ctx->mcxt;
+	result = vr_toast_body_save(&req);
+
+	pfree(body);
+
+	return result;
 }
 
 /*

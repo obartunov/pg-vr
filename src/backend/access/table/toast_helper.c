@@ -141,6 +141,9 @@ toast_tuple_init(ToastTupleContext *ttc)
 		 */
 		if (att->attlen == -1)
 		{
+			bool		need_detoast = true;
+
+
 			/*
 			 * If the table's attribute says PLAIN always, force it so.
 			 */
@@ -148,14 +151,84 @@ toast_tuple_init(ToastTupleContext *ttc)
 				ttc->ttc_attr[i].tai_colflags |= TOASTCOL_IGNORE;
 
 			/*
+			 * Value Representation safe relocate (INSERT / rewrite / cross-
+			 * relation copy path).
+			 *
+			 * A persistent VR (VARTAG_VR) owns its body in a specific TOAST
+			 * relation named by storage_oid.  A heap rewrite (VACUUM FULL,
+			 * CLUSTER, REPACK, ALTER rewrite) or a cross-relation copy carries
+			 * such a value into a relation whose reltoastrelid differs; a raw
+			 * pointer copy would dangle once the source storage is dropped.
+			 * Instead of flattening or refusing, copy the body into THIS
+			 * relation's TOAST and rewrite the locator, preserving the VR
+			 * representation.  The copy does NOT delete the source body: the old
+			 * relfilenode/relation keeps ownership and reclaims it (on a rewrite
+			 * the old relfilenode and its TOAST are dropped at the swap).  The
+			 * body is written into this relation's physical TOAST; during a
+			 * rewrite toast_save_datum stamps the new locator with rd_toastoid
+			 * (the pre-swap OID), so the result is homed here and must not be
+			 * flattened afterwards, so clear need_detoast.  PLAIN storage must
+			 * stay inline and is left to the flatten path below.  The body writer
+			 * inherits the heap's TOAST options (e.g. HEAP_INSERT_NO_LOGICAL
+			 * during a rewrite) via ttc_options.
+			 *
+			 * Seam precedent: jsonb_toaster copy_toast in toast_tuple_init
+			 * (postgrespro/postgres jsonb_toaster branch).
+			 */
+			if (att->attstorage != TYPSTORAGE_PLAIN &&
+				ttc->ttc_oldvalues == NULL &&
+				VARATT_IS_EXTERNAL_VR(new_value))
+			{
+				varatt_vr	vrv;
+
+				VARATT_EXTERNAL_GET_POINTER(vrv, new_value);
+				if (vrv.vr_storage_oid != ttc->ttc_rel->rd_rel->reltoastrelid)
+				{
+					VrRewriteContext rc;
+					varlena    *new_vr;
+
+					/* Validate the target before writing anything. */
+					if (!OidIsValid(ttc->ttc_rel->rd_rel->reltoastrelid))
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("cannot relocate a value representation: target relation has no TOAST storage")));
+
+					rc.old_rel = NULL;
+					rc.new_rel = ttc->ttc_rel;
+					rc.attnum = (AttrNumber) (i + 1);
+					rc.flags = 0;
+					rc.toast_options = ttc->ttc_options;
+					rc.mcxt = CurrentMemoryContext;
+					new_vr = (varlena *)
+						DatumGetPointer(vr_toast_body_copy_to_relation(ttc->ttc_values[i],
+																	   ttc->ttc_rel,
+																	   (AttrNumber) (i + 1),
+																	   &rc));
+
+					/* Free a prior palloc'd copy of this column value, if any. */
+					if (ttc->ttc_attr[i].tai_colflags & TOASTCOL_NEEDS_FREE)
+						pfree(DatumGetPointer(ttc->ttc_values[i]));
+
+					ttc->ttc_attr[i].tai_oldexternal = new_value;
+					ttc->ttc_values[i] = PointerGetDatum(new_vr);
+					ttc->ttc_attr[i].tai_colflags |= TOASTCOL_NEEDS_FREE;
+					ttc->ttc_flags |= (TOAST_NEEDS_CHANGE | TOAST_NEEDS_FREE);
+					new_value = new_vr;
+					need_detoast = false;
+				}
+			}
+
+			/*
 			 * We took care of UPDATE above, so any external value we find
 			 * still in the tuple must be someone else's that we cannot reuse
 			 * (this includes the case of an out-of-line in-memory datum).
 			 * Fetch it back (without decompression, unless we are forcing
 			 * PLAIN storage).  If necessary, we'll push it out as a new
-			 * external value below.
+			 * external value below.  A VR relocated just above is already homed
+			 * in this relation's TOAST and must not be flattened, so it is
+			 * excluded by need_detoast.
 			 */
-			if (VARATT_IS_EXTERNAL(new_value))
+			if (VARATT_IS_EXTERNAL(new_value) && need_detoast)
 			{
 				ttc->ttc_attr[i].tai_oldexternal = new_value;
 				if (att->attstorage == TYPSTORAGE_PLAIN)
