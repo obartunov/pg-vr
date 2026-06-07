@@ -34,6 +34,7 @@
 #include "access/detoast.h"			/* VARATT_EXTERNAL_GET_POINTER */
 #include "access/toast_internals.h" /* toast_delete_chunks_by_id */
 #include "access/vr_toast.h"
+#include "varatt.h"
 
 /*
  * vr_toast_body_delete
@@ -106,4 +107,165 @@ vr_toast_same_body(Datum a, Datum b)
 		return false;
 
 	return la.storage_oid == lb.storage_oid && la.valueid == lb.valueid;
+}
+
+/*
+ * vr_toast_body_save
+ *
+ * Write the body as a plain uncompressed varlena via the core writer
+ * toast_save_datum, which allocates a value id and writes the chunks (with WAL
+ * and the toast index insert) into rel->rd_rel->reltoastrelid.  Copy the
+ * (toastrelid, valueid) locator from the returned varatt_external into a fresh
+ * persistent varatt_vr.
+ *
+ * Safety / ownership: the body lives in the OWNING relation's TOAST relation,
+ * so it has the ordinary-TOAST lifetime - reclaimed when the owning heap tuple
+ * is deleted (toast_delete_datum -> vr_toast_body_delete) and when the
+ * relfilenode is dropped.  storage_oid is therefore the target reltoastrelid.
+ * The body is stored UNCOMPRESSED so vr_toast_body_read reads it back verbatim.
+ * oldexternal is NULL: a fresh body, not an OID-preserving rewrite (rewrite of
+ * a VR value is refused by the heap_toast_insert_or_update guard).
+ */
+Datum
+vr_toast_body_save(const VrBodySaveRequest *req)
+{
+	struct varlena *tmp;
+	Size		tmp_size;
+	Datum		ext_datum;
+	struct varlena *ext;
+	varatt_external ve;
+	struct varlena *result;
+	varatt_vr  *vr;
+	MemoryContext oldcxt;
+
+	Assert(req != NULL);
+	Assert(req->rel != NULL);
+	Assert(req->body != NULL || req->body_size == 0);
+	Assert(req->body_size <= VARLENA_EXTSIZE_MASK);
+
+	/* Wrap the body as a plain (uncompressed, 4-byte-header) varlena. */
+	tmp_size = VARHDRSZ + req->body_size;
+	tmp = (struct varlena *) palloc(tmp_size);
+	SET_VARSIZE(tmp, tmp_size);
+	if (req->body_size > 0)
+		memcpy(VARDATA(tmp), req->body, req->body_size);
+
+	/* Core writer: allocates value id, writes chunks into rel's TOAST rel. */
+	ext_datum = toast_save_datum(req->rel, PointerGetDatum(tmp), NULL, 0);
+	ext = (struct varlena *) DatumGetPointer(ext_datum);
+	Assert(VARATT_IS_EXTERNAL_ONDISK(ext));
+	VARATT_EXTERNAL_GET_POINTER(ve, ext);
+
+	/* Assemble the persistent VR pointer in the caller's context. */
+	oldcxt = MemoryContextSwitchTo(req->mcxt);
+	result = (struct varlena *) palloc0(VARHDRSZ_EXTERNAL + sizeof(varatt_vr));
+	SET_VARTAG_EXTERNAL(result, VARTAG_VR);
+	vr = (varatt_vr *) VARDATA_EXTERNAL(result);
+	vr->vr_kind = (uint8) req->kind;
+	vr->vr_version = req->version;
+	vr->vr_flags = req->flags;
+	vr->vr_logical_size = (int32) req->logical_size;
+	vr->vr_body_size = (int32) req->body_size;
+	vr->vr_storage_oid = ve.va_toastrelid;
+	vr->vr_valueid = ve.va_valueid;
+	MemoryContextSwitchTo(oldcxt);
+
+	pfree(tmp);
+	pfree(ext);
+
+	return PointerGetDatum(result);
+}
+
+/*
+ * vr_toast_body_size
+ *
+ * Physical body byte count of a persistent VR value, read from the header.
+ */
+Size
+vr_toast_body_size(Datum stored_value)
+{
+	struct varlena *attr = (struct varlena *) DatumGetPointer(stored_value);
+	varatt_vr	v;
+
+	Assert(VARATT_IS_EXTERNAL_VR(attr));
+	VARATT_EXTERNAL_GET_POINTER(v, attr);
+	return (Size) v.vr_body_size;
+}
+
+/*
+ * vr_toast_body_read
+ *
+ * Read [offset, offset+len) of a persistent VR body into buf.  Reconstruct the
+ * ordinary on-disk TOAST pointer for the locator and fetch through
+ * detoast_external_attr.  The body was stored uncompressed, so va_rawsize =
+ * body_size + VARHDRSZ and the external (saved) size equals body_size.
+ */
+void
+vr_toast_body_read(Datum stored_value, Size offset, Size len, void *buf)
+{
+	struct varlena *attr = (struct varlena *) DatumGetPointer(stored_value);
+	varatt_vr	v;
+	Size		body_size;
+	varatt_external ve;
+	struct varlena *extptr;
+	struct varlena *full;
+
+	Assert(VARATT_IS_EXTERNAL_VR(attr));
+	VARATT_EXTERNAL_GET_POINTER(v, attr);
+	body_size = (Size) v.vr_body_size;
+
+	if (offset > body_size || len > body_size - offset)
+		elog(ERROR,
+			 "VR body read out of range: offset %zu len %zu body %zu",
+			 offset, len, body_size);
+
+	memset(&ve, 0, sizeof(ve));
+	ve.va_rawsize = (int32) (body_size + VARHDRSZ);
+	ve.va_extinfo = (uint32) body_size; /* uncompressed: extsize == rawsize - VARHDRSZ */
+	ve.va_valueid = v.vr_valueid;
+	ve.va_toastrelid = v.vr_storage_oid;
+
+	extptr = (struct varlena *) palloc(VARHDRSZ_EXTERNAL + sizeof(varatt_external));
+	SET_VARTAG_EXTERNAL(extptr, VARTAG_ONDISK);
+	memcpy(VARDATA_EXTERNAL(extptr), &ve, sizeof(ve));
+
+	full = detoast_external_attr(extptr);
+	Assert((Size) VARSIZE_ANY_EXHDR(full) == body_size);
+	if (len > 0)
+		memcpy(buf, VARDATA_ANY(full) + offset, len);
+
+	pfree(full);
+	pfree(extptr);
+}
+
+/*
+ * vr_body_size / vr_body_read - public, type-facing delegates.  Persistent VR
+ * values delegate to the substrate; the transient in-memory body path
+ * (VARTAG_VR_INMEM) is not part of this milestone and errors explicitly.
+ */
+Size
+vr_body_size(Datum stored_value)
+{
+	struct varlena *attr = (struct varlena *) DatumGetPointer(stored_value);
+
+	if (VARATT_IS_EXTERNAL_VR(attr))
+		return vr_toast_body_size(stored_value);
+
+	elog(ERROR, "vr_body_size: not a persistent value representation");
+	return 0;					/* unreachable; keep the compiler quiet */
+}
+
+void
+vr_body_read(Datum stored_value, Size offset, Size len, void *buf)
+{
+	struct varlena *attr = (struct varlena *) DatumGetPointer(stored_value);
+
+	if (VARATT_IS_EXTERNAL_VR(attr))
+	{
+		vr_toast_body_read(stored_value, offset, len, buf);
+		return;
+	}
+
+	elog(ERROR,
+		 "vr_body_read: transient value representation body read is not implemented in this milestone");
 }
