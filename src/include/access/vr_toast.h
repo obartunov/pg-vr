@@ -41,6 +41,11 @@ typedef struct VrBodySaveRequest
 	const void *body;
 	Size		body_size;
 
+	int			toast_options;	/* options for toast_save_datum: 0 for an
+								 * ordinary insert; the surrounding heap insert
+								 * options (e.g. HEAP_INSERT_NO_LOGICAL) during a
+								 * heap rewrite so the body chunks honour the same
+								 * WAL/logical-decoding policy as the heap */
 	MemoryContext mcxt;
 } VrBodySaveRequest;
 

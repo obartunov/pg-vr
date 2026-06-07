@@ -30,6 +30,7 @@
 #include "access/heaptoast.h"
 #include "access/toast_helper.h"
 #include "access/toast_internals.h"
+#include "access/vr_toast.h"
 #include "utils/fmgroids.h"
 
 
@@ -136,42 +137,6 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 	if (oldtup != NULL)
 		heap_deform_tuple(oldtup, tupleDesc, toast_oldvalues, toast_oldisnull);
 
-	/*
-	 * Value Representation rewrite/cross-relation policy.
-	 *
-	 * A persistent VR value (VARTAG_VR) owns its out-of-line body in the TOAST
-	 * relation of the relation that holds it; storage_oid names that relation.
-	 * In an ordinary INSERT/UPDATE the body was written into this relation's own
-	 * TOAST relation (storage_oid == reltoastrelid).  A heap rewrite (VACUUM
-	 * FULL, CLUSTER, repack, ALTER rewrite) or a cross-relation copy that
-	 * carried a raw VR pointer into a different relation would leave it
-	 * referencing storage dropped with the old relfilenode - a dangling pointer.
-	 * v1 wires no safe relocate (that needs the type rewrite method), so refuse
-	 * it explicitly here rather than persist a bad pointer.  The common
-	 * rewrite/copy paths instead flatten the VR via toast_tuple_init's detoast
-	 * of incoming external values, and never reach this check.
-	 */
-	for (int i = 0; i < numAttrs; i++)
-	{
-		varlena    *val;
-
-		if (toast_isnull[i] || TupleDescAttr(tupleDesc, i)->attlen != -1)
-			continue;
-
-		val = (varlena *) DatumGetPointer(toast_values[i]);
-		if (VARATT_IS_EXTERNAL_VR(val))
-		{
-			varatt_vr	v;
-
-			VARATT_EXTERNAL_GET_POINTER(v, val);
-			if (v.vr_storage_oid != rel->rd_rel->reltoastrelid)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot move a value representation to a different relation"),
-						 errdetail("Rewriting a table with a value representation value (VACUUM FULL, CLUSTER, or table rewrite) is not supported.")));
-		}
-	}
-
 	/* ----------
 	 * Prepare for toasting
 	 * ----------
@@ -190,7 +155,47 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		ttc.ttc_oldisnull = toast_oldisnull;
 	}
 	ttc.ttc_attr = toast_attr;
+	ttc.ttc_options = options;
 	toast_tuple_init(&ttc);
+
+	/*
+	 * Value Representation final safety net (NOT the relocate mechanism).
+	 *
+	 * Relocation of a persistent VR into this relation's TOAST is performed
+	 * inside toast_tuple_init's external-value path, which copies the body and
+	 * rewrites the locator so the value ends up homed here, or flattens it for
+	 * PLAIN storage.  If a persistent VR whose body is not homed here still
+	 * reaches this point, a raw pointer copy would dangle once the source
+	 * storage is dropped, so refuse it rather than persist a bad locator.
+	 *
+	 * During a heap rewrite (VACUUM FULL / CLUSTER / REPACK / ALTER rewrite)
+	 * rd_toastoid is set to the pre-swap toast OID and toast_save_datum stamps
+	 * new pointers with it (see toast_internals.c), while the bodies are written
+	 * into the new relation's physical TOAST; the post-swap home is therefore
+	 * rd_toastoid, not the new reltoastrelid.  Compare against that effective
+	 * home OID.
+	 */
+	{
+		Oid			home_toastoid = OidIsValid(rel->rd_toastoid) ?
+			rel->rd_toastoid : rel->rd_rel->reltoastrelid;
+
+		for (int i = 0; i < numAttrs; i++)
+		{
+			varlena    *val;
+			varatt_vr	v;
+
+			if (toast_isnull[i] || TupleDescAttr(tupleDesc, i)->attlen != -1)
+				continue;
+			val = (varlena *) DatumGetPointer(toast_values[i]);
+			if (!VARATT_IS_EXTERNAL_VR(val))
+				continue;
+			VARATT_EXTERNAL_GET_POINTER(v, val);
+			if (v.vr_storage_oid != home_toastoid)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("cannot store a value representation referencing a different relation's TOAST storage")));
+		}
+	}
 
 	/* ----------
 	 * Compress and/or save external until data fits into target length

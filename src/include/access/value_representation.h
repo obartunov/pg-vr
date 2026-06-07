@@ -149,6 +149,9 @@ typedef struct VrRewriteContext
 	Relation	new_rel;		/* target relation / new physical home */
 	AttrNumber	attnum;
 	uint32		flags;			/* per-call VR_REWRITE_* policy flags */
+	int			toast_options;	/* TOAST/heap-insert option bits passed through
+								 * to the body writer; carries
+								 * HEAP_INSERT_NO_LOGICAL during a heap rewrite */
 	MemoryContext mcxt;
 } VrRewriteContext;
 

@@ -53,6 +53,14 @@ typedef struct
 	bool	   *ttc_oldisnull;	/* null flags from previous tuple */
 
 	/*
+	 * Caller-set TOAST/heap-insert option bits (the same ones passed to
+	 * heap_toast_insert_or_update).  Used so a value representation body copied
+	 * into this relation during a heap rewrite inherits the heap's WAL/logical-
+	 * decoding policy (notably HEAP_INSERT_NO_LOGICAL).  Set to 0 if irrelevant.
+	 */
+	int			ttc_options;
+
+	/*
 	 * Before calling toast_tuple_init, the caller should set ttc_attr to
 	 * point to an array of ToastAttrInfo structures of a length equal to
 	 * ttc_rel->rd_att->natts.  The contents of the array need not be
