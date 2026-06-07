@@ -55,7 +55,14 @@ SELECT vr_persist_toast_count('t') AS toast_chunks_after_cleanup;
                           0
 (1 row)
 
--- rewrite / cross-relation behaviour (explicit ERROR or proven safe)
+-- ===================================================================
+-- rewrite / repack coverage: a persistent VR is preserved across every
+-- heap rewrite path (body copied into the operation's target TOAST,
+-- locator rewritten), never flattened or refused.  Each step rechecks
+-- vr=1, vr_storage_ok=1 (homed in the target TOAST after the swap) and
+-- that flatten still returns the original bytes verbatim.
+-- ===================================================================
+ALTER TABLE t ADD PRIMARY KEY (id);   -- replica identity for REPACK (CONCURRENTLY)
 INSERT INTO t VALUES (3, decode(repeat('ab', 5000), 'hex'));
 SELECT vr_persist_probe('t');
                         vr_persist_probe                         
@@ -64,22 +71,118 @@ SELECT vr_persist_probe('t');
 (1 row)
 
 VACUUM FULL t;
-ERROR:  cannot move a value representation to a different relation
-DETAIL:  Rewriting a table with a value representation value (VACUUM FULL, CLUSTER, or table rewrite) is not supported.
+SELECT 'after VACUUM FULL' AS step, vr_persist_probe('t');
+       step        |                        vr_persist_probe                         
+-------------------+-----------------------------------------------------------------
+ after VACUUM FULL | rows=1 vr=1 ondisk=0 inline=0 vr_storage_ok=1 vr_body_size=5000
+(1 row)
+
+SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t WHERE id = 3;
+ rt 
+----
+ t
+(1 row)
+
+CLUSTER t USING t_pkey;
+SELECT 'after CLUSTER' AS step, vr_persist_probe('t');
+     step      |                        vr_persist_probe                         
+---------------+-----------------------------------------------------------------
+ after CLUSTER | rows=1 vr=1 ondisk=0 inline=0 vr_storage_ok=1 vr_body_size=5000
+(1 row)
+
+SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t WHERE id = 3;
+ rt 
+----
+ t
+(1 row)
+
+REPACK t;
+SELECT 'after REPACK' AS step, vr_persist_probe('t');
+     step     |                        vr_persist_probe                         
+--------------+-----------------------------------------------------------------
+ after REPACK | rows=1 vr=1 ondisk=0 inline=0 vr_storage_ok=1 vr_body_size=5000
+(1 row)
+
+SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t WHERE id = 3;
+ rt 
+----
+ t
+(1 row)
+
+REPACK (CONCURRENTLY) t;
+SELECT 'after REPACK (CONCURRENTLY)' AS step, vr_persist_probe('t');
+            step             |                        vr_persist_probe                         
+-----------------------------+-----------------------------------------------------------------
+ after REPACK (CONCURRENTLY) | rows=1 vr=1 ondisk=0 inline=0 vr_storage_ok=1 vr_body_size=5000
+(1 row)
+
+SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t WHERE id = 3;
+ rt 
+----
+ t
+(1 row)
+
+ALTER TABLE t ALTER COLUMN id TYPE bigint;   -- column type change forces full rewrite
+SELECT 'after ALTER rewrite' AS step, vr_persist_probe('t');
+        step         |                        vr_persist_probe                         
+---------------------+-----------------------------------------------------------------
+ after ALTER rewrite | rows=1 vr=1 ondisk=0 inline=0 vr_storage_ok=1 vr_body_size=5000
+(1 row)
+
+SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t WHERE id = 3;
+ rt 
+----
+ t
+(1 row)
+
+-- the live relation owns its relocated body, no orphan from prior homes
+SELECT vr_persist_toast_count('t') > 0 AS has_relocated_body;
+ has_relocated_body 
+--------------------
+ t
+(1 row)
+
+-- CREATE TABLE AS: cross-relation copy into a fresh relation's TOAST
+CREATE TABLE t_ctas AS SELECT * FROM t;
+SELECT 'CTAS target' AS step, vr_persist_probe('t_ctas');
+    step     |                        vr_persist_probe                         
+-------------+-----------------------------------------------------------------
+ CTAS target | rows=1 vr=1 ondisk=0 inline=0 vr_storage_ok=1 vr_body_size=5000
+(1 row)
+
+SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t_ctas WHERE id = 3;
+ rt 
+----
+ t
+(1 row)
+
+-- cross-relation INSERT ... SELECT: copy into another relation's TOAST
+CREATE TABLE t2 (id bigint, b bytea);
+INSERT INTO t2 SELECT id, b FROM t;
+SELECT 'INSERT SELECT target' AS step, vr_persist_probe('t2');
+         step         |                        vr_persist_probe                         
+----------------------+-----------------------------------------------------------------
+ INSERT SELECT target | rows=1 vr=1 ondisk=0 inline=0 vr_storage_ok=1 vr_body_size=5000
+(1 row)
+
+SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t2 WHERE id = 3;
+ rt 
+----
+ t
+(1 row)
+
+-- source still intact and still a persistent VR after the cross-rel copies
+SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t WHERE id = 3;
+ rt 
+----
+ t
+(1 row)
+
 SELECT vr_persist_probe('t');
                         vr_persist_probe                         
 -----------------------------------------------------------------
  rows=1 vr=1 ondisk=0 inline=0 vr_storage_ok=1 vr_body_size=5000
 (1 row)
-
-CREATE TABLE t2 (id int, b bytea);
-INSERT INTO t2 SELECT id, b FROM t;
-ERROR:  cannot move a value representation to a different relation
-DETAIL:  Rewriting a table with a value representation value (VACUUM FULL, CLUSTER, or table rewrite) is not supported.
-SELECT b = decode(repeat('ab', 5000), 'hex') AS rt FROM t2 WHERE id = 3;
- rt 
-----
-(0 rows)
 
 SELECT vr_persist_disarm();
  vr_persist_disarm 
@@ -87,5 +190,5 @@ SELECT vr_persist_disarm();
  
 (1 row)
 
-DROP TABLE t, t2;
+DROP TABLE t, t2, t_ctas;
 DROP EXTENSION vr_persist_smoke;
