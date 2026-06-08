@@ -53,6 +53,7 @@ extern void toast_delete_chunks_by_id(Oid toastrelid, Oid valueid,
 									  bool is_speculative);
 extern Datum toast_save_datum(Relation rel, Datum value,
 							  varlena *oldexternal, uint32 options);
+extern bool toastid_valueid_exists(Oid toastrelid, Oid valueid);
 
 extern int	toast_open_indexes(Relation toastrel,
 							   LOCKMODE lock,

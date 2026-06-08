@@ -380,6 +380,30 @@ vr_toast_body_copy_to_relation(Datum old_stored, Relation new_rel,
 
 	VARATT_EXTERNAL_GET_POINTER(v, old);
 
+	/*
+	 * Fast path for a duplicate version during a heap rewrite.  A rewrite copies
+	 * every live and recently-dead version of a row; versions that share one VR
+	 * body carry the same locator (vr_toast_same_body).  Once an earlier version
+	 * has copied the body, its value OID is present in the target TOAST relation
+	 * and the relocated descriptor is byte-identical to the source one
+	 * (storage_oid == rd_toastoid, value OID reused).  Detect that with a single
+	 * index probe and return the source descriptor unchanged - WITHOUT fetching
+	 * the body - so a shared body is read and re-chunked once per distinct value
+	 * rather than once per version.  Outside a rewrite (rd_toastoid unset) or for
+	 * a body homed elsewhere the guard is false and the full copy below runs.
+	 */
+	if (OidIsValid(new_rel->rd_toastoid) &&
+		v.vr_storage_oid == new_rel->rd_toastoid &&
+		toastid_valueid_exists(new_rel->rd_rel->reltoastrelid, v.vr_valueid))
+	{
+		oldcxt = MemoryContextSwitchTo(ctx->mcxt);
+		result = (struct varlena *) palloc0(VARHDRSZ_EXTERNAL + sizeof(varatt_vr));
+		SET_VARTAG_EXTERNAL(result, VARTAG_VR);
+		memcpy(VARDATA_EXTERNAL(result), &v, sizeof(v));
+		MemoryContextSwitchTo(oldcxt);
+		return PointerGetDatum(result);
+	}
+
 	/* Fetch the saved stream as-stored (still compressed if compressed). */
 	vr_build_source_external(&v, &ve_src);
 	src_extptr = (struct varlena *) palloc(VARHDRSZ_EXTERNAL + sizeof(varatt_external));
