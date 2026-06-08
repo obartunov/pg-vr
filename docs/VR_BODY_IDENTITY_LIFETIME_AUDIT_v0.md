@@ -410,6 +410,14 @@ B-repl  Logical replication slot wedge (operational; EMPIRICALLY REPRODUCED).
     representation is not supported"; confirmed_flush_lsn unchanged across the
     failed call; repeat call errors again (permanently stuck).  This is an
     explicit deployment boundary, not a documentation note.
+    GATED for new construction (vr-brepl-gate-v0): vr_make_save_body refuses
+    when RelationIsLogicallyLogged(rel), before any body write, so a cold
+    decision cannot create a wedge-hazard value on a logically logged relation.
+    RESIDUAL: VR created before the relation became logically logged (e.g.
+    wal_level raised later) is not caught by the construction gate and remains
+    covered only by the decode-time backstop.  The rewrite/relocate path is
+    intentionally not gated, so VACUUM FULL/CLUSTER/REPACK of pre-existing VR is
+    unaffected.  Logical decoding support is not implemented.
 ```
 
 ---
@@ -437,11 +445,17 @@ descriptor format change.
 deferred behind B1-B6, each its own evidence-backed milestone, with the GC rule
 (B2) and the I1 replacement (B3) designed and reviewed before any code.
 
-**B-repl remains open and on a separate track.** The hard refusal of VR in
-logical decoding is the correct safety choice, but the silent slot wedge and WAL
-retention are an explicit deployment boundary still to be gated (refuse VR-cold
-construction on a published/decoded relation, or document the operational
-restriction).  B-repl is not addressed by F2(a) and must not be conflated with it.
+**B-repl is gated for new construction; a residual hazard remains.** The hard
+refusal of VR in logical decoding is the correct safety choice, but the silent
+slot wedge and WAL retention were an explicit deployment boundary.  It is now
+gated at construction: vr_make_save_body refuses when RelationIsLogicallyLogged
+(vr-brepl-gate-v0), before any body write, so a storage-side cold decision cannot
+create a wedge-hazard value on a logically logged relation.  Residual: VR created
+before the relation became logically logged (e.g. wal_level raised later) is not
+caught by the construction gate and is covered only by the decode-time backstop;
+the rewrite/relocate path is intentionally not gated, so VACUUM FULL/CLUSTER/REPACK
+of pre-existing VR is unaffected.  Logical decoding support is not implemented.
+B-repl is on a separate track from F2(a) and must not be conflated with it.
 
 **Current safe posture after F2(a): physical-verbatim copy/rehome with a
 valueid-stable, dedup-correct rewrite.**  This is option A made safe for the

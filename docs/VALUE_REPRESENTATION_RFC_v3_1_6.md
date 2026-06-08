@@ -1120,6 +1120,8 @@ Logical decoding is a logical boundary, not a physical-body transport boundary.
 
 The persistent VR pointer must not be emitted as logical data.
 
+Construction-time boundary (implemented).  Logical decoding support for VR is not implemented.  To keep a storage-side cold decision from silently wedging a logical replication slot, persistent VR construction is refused on logically logged relations: `vr_make_save_body` (the sole construction primitive) raises an error when `RelationIsLogicallyLogged(rel)` is true, before any body is written.  The decode-time refusals in `reorderbuffer.c` and `proto.c` remain a backstop for VR created before the relation became logically logged (for example before `wal_level` was raised to `logical`); such pre-existing values are a deployment hazard caught only by that backstop.  This is a VR representation boundary, not a TOAST rule.  The rewrite/relocate path does not call the construction primitive, so existing VR values stay rewriteable.
+
 For TOAST-backed v0 bodies, logical decoding may reconstruct a decode-local transient VR form from decoded TOAST data and then call `flatten()` before output.
 
 ```text
