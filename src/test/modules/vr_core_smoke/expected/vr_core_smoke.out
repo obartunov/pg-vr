@@ -44,6 +44,8 @@ SELECT vr_core_badkind();      -- unknown / unregistered kind
 ERROR:  unsupported VR kind 3
 SELECT vr_core_badflags();     -- unknown persistent flag bit
 ERROR:  unsupported VR flags 0x4
+SELECT vr_core_badmethod();    -- reserved/unknown compression method must be rejected
+ERROR:  VR body read: unknown compression method 3
 SELECT vr_core_badregister();  -- invalid-kind registration must be rejected
 ERROR:  vr_register_methods: invalid VR kind 0
 SELECT vr_core_dupregister();  -- duplicate registration must be rejected

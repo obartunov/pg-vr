@@ -17,6 +17,11 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'vr_core_badflags'
 LANGUAGE C;
 
+CREATE FUNCTION vr_core_badmethod()
+RETURNS void
+AS 'MODULE_PATHNAME', 'vr_core_badmethod'
+LANGUAGE C;
+
 CREATE FUNCTION vr_core_badregister()
 RETURNS void
 AS 'MODULE_PATHNAME', 'vr_core_badregister'

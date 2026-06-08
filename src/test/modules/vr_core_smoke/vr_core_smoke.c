@@ -98,6 +98,31 @@ vr_make_inmem(const char *body, int32 body_size, VrKind kind, uint8 version,
 }
 
 /*
+ * Forge a PERSISTENT VARTAG_VR datum with a chosen flags/size header and an
+ * invalid locator.  Used only to drive the substrate reader's validation: the
+ * reader must reject a bad header before it ever touches the (invalid) locator.
+ */
+static struct varlena *
+vr_make_persistent_forged(VrKind kind, uint16 flags,
+						  int32 logical_size, int32 body_size)
+{
+	Size		total = VARHDRSZ_EXTERNAL + sizeof(varatt_vr);
+	struct varlena *result = (struct varlena *) palloc0(total);
+	varatt_vr  *h;
+
+	SET_VARTAG_EXTERNAL(result, VARTAG_VR);
+	h = (varatt_vr *) VARDATA_EXTERNAL(result);
+	h->vr_kind = (uint8) kind;
+	h->vr_version = 1;
+	h->vr_flags = flags;
+	h->vr_logical_size = logical_size;
+	h->vr_body_size = body_size;
+	h->vr_storage_oid = InvalidOid;
+	h->vr_valueid = InvalidOid;
+	return result;
+}
+
+/*
  * vr_core_roundtrip(payload bytea) RETURNS text
  *
  * Build a transient VR over payload, probe the representation contract, flatten
@@ -173,6 +198,31 @@ vr_core_badflags(PG_FUNCTION_ARGS)
 									   VR_KIND_TEST_VECTORS, 1, 0x0004);
 
 	(void) detoast_attr(vr);	/* expect ERROR: unsupported VR flags 0x4 */
+
+	PG_RETURN_VOID();
+}
+
+/*
+ * vr_core_badmethod() RETURNS void
+ *
+ * The reserved compression method 0x0003 passes the known-flag-bit mask
+ * (VR_FLAG_KNOWN_MASK) yet names no defined method.  The substrate body reader
+ * must hard-ERROR on it rather than misread the stream.  Drive vr_body_read
+ * directly with a forged persistent header; the reader must reject the method
+ * before it ever dereferences the (invalid) locator.
+ */
+PG_FUNCTION_INFO_V1(vr_core_badmethod);
+
+Datum
+vr_core_badmethod(PG_FUNCTION_ARGS)
+{
+	struct varlena *vr = vr_make_persistent_forged(VR_KIND_TEST_VECTORS,
+												   0x0003,
+												   (int32) (VARHDRSZ + 4), 4);
+	char		buf[4];
+
+	/* expect ERROR: VR body read: unknown compression method 3 */
+	vr_body_read(PointerGetDatum(vr), 0, sizeof(buf), buf);
 
 	PG_RETURN_VOID();
 }
