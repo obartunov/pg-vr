@@ -95,6 +95,22 @@ typedef struct varatt_vr_inmem
 } varatt_vr_inmem;
 
 /*
+ * varatt_vr.vr_flags layout (v1).
+ *
+ * The low VR_FLAG_COMPRESSION_MASK bits encode the compression method actually
+ * used for the saved physical body stream (descriptor vr_body_size).  All other
+ * bits are reserved and MUST be zero; a reader ERRORs on any unknown bit and on
+ * an unknown compression method.  vr_logical_size always remains the logical
+ * (decompressed) VARSIZE including VARHDRSZ, independent of the method here.
+ */
+#define VR_FLAG_COMPRESSION_MASK	0x0003
+#define VR_COMPRESSION_NONE			0x0000	/* body stored uncompressed */
+#define VR_COMPRESSION_PGLZ			0x0001	/* body stored pglz-compressed */
+#define VR_COMPRESSION_LZ4			0x0002	/* body stored lz4-compressed */
+/* 0x0003 is reserved and read as an unknown method (reader ERRORs) */
+#define VR_FLAG_KNOWN_MASK			VR_FLAG_COMPRESSION_MASK
+
+/*
  * These macros define the "saved size" portion of va_extinfo.  Its remaining
  * two high-order bits identify the compression method.
  */

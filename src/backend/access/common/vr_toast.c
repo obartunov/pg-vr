@@ -32,6 +32,7 @@
 #include "postgres.h"
 
 #include "access/detoast.h"			/* VARATT_EXTERNAL_GET_POINTER */
+#include "access/toast_compression.h"	/* toast compression methods/ids */
 #include "access/toast_internals.h" /* toast_delete_chunks_by_id */
 #include "access/vr_toast.h"
 #include "utils/rel.h"			/* RelationData->rd_rel->reltoastrelid */
@@ -113,17 +114,26 @@ vr_toast_same_body(Datum a, Datum b)
 /*
  * vr_toast_body_save
  *
- * Write the body as a plain uncompressed varlena via the core writer
- * toast_save_datum, which allocates a value id and writes the chunks (with WAL
- * and the toast index insert) into rel->rd_rel->reltoastrelid.  Copy the
- * (toastrelid, valueid) locator from the returned varatt_external into a fresh
- * persistent varatt_vr.
+ * Persist the logical body into rel's TOAST storage and return a fresh
+ * persistent varatt_vr naming it.
+ *
+ * Compression is a property of the VR body substrate, not of any kind: the body
+ * is compressed with the attribute's compression method using the same decision
+ * and on-disk representation as ordinary TOAST (toast_compress_datum keeps the
+ * compressed form only when it actually saves space).  Whatever is stored -
+ * compressed or not - goes through the core writer toast_save_datum, which
+ * allocates a value id and writes the chunks (with WAL and the toast index
+ * insert) into rel->rd_rel->reltoastrelid.  The descriptor records:
+ *	 vr_logical_size = the logical (decompressed) VARSIZE incl VARHDRSZ;
+ *	 vr_body_size    = the SAVED PHYSICAL stream size (compressed when compressed);
+ *	 vr_flags low bits = the compression method actually used (VR_COMPRESSION_*).
+ * vr_toast_body_read reconstructs the external pointer from these and lets
+ * detoast_external_attr decompress, so it returns the logical body verbatim.
  *
  * Safety / ownership: the body lives in the OWNING relation's TOAST relation,
  * so it has the ordinary-TOAST lifetime - reclaimed when the owning heap tuple
  * is deleted (toast_delete_datum -> vr_toast_body_delete) and when the
  * relfilenode is dropped.  storage_oid is therefore the target reltoastrelid.
- * The body is stored UNCOMPRESSED so vr_toast_body_read reads it back verbatim.
  * oldexternal is NULL: a fresh body, not an OID-preserving rewrite (rewrite of
  * a VR value is refused by the heap_toast_insert_or_update guard).
  */
@@ -132,11 +142,16 @@ vr_toast_body_save(const VrBodySaveRequest *req)
 {
 	struct varlena *tmp;
 	Size		tmp_size;
+	Datum		cvalue;
+	struct varlena *compressed;
+	struct varlena *to_store;
 	Datum		ext_datum;
 	struct varlena *ext;
 	varatt_external ve;
 	struct varlena *result;
 	varatt_vr  *vr;
+	uint16		vrcomp;
+	char		cmethod;
 	MemoryContext oldcxt;
 
 	Assert(req != NULL);
@@ -144,19 +159,62 @@ vr_toast_body_save(const VrBodySaveRequest *req)
 	Assert(req->body != NULL || req->body_size == 0);
 	Assert(req->body_size <= VARLENA_EXTSIZE_MASK);
 
-	/* Wrap the body as a plain (uncompressed, 4-byte-header) varlena. */
+	/*
+	 * Substrate contract: the body, wrapped as a varlena and decompressed on
+	 * read, IS the logical value, so logical_size must be exactly
+	 * VARHDRSZ + body_size.  A kind that violates this would make the reader
+	 * reconstruct a wrong raw size and decompress to the wrong length.  Enforce
+	 * it in production, before any storage is written, instead of relying only
+	 * on the debug-only Assert on va_rawsize below.
+	 */
+	if (req->logical_size != (Size) VARHDRSZ + req->body_size)
+		elog(ERROR,
+			 "vr_toast_body_save: logical_size %zu does not match VARHDRSZ + body_size %zu",
+			 req->logical_size, req->body_size);
+
+	/* Wrap the logical body as a plain (uncompressed, 4-byte-header) varlena. */
 	tmp_size = VARHDRSZ + req->body_size;
 	tmp = (struct varlena *) palloc(tmp_size);
 	SET_VARSIZE(tmp, tmp_size);
 	if (req->body_size > 0)
 		memcpy(VARDATA(tmp), req->body, req->body_size);
 
+	/*
+	 * Compress with the attribute's method, same rule and representation as
+	 * ordinary TOAST.  toast_compress_datum returns NULL when compression does
+	 * not pay, in which case the body is stored uncompressed.
+	 */
+	cmethod = TupleDescAttr(RelationGetDescr(req->rel),
+							req->attnum - 1)->attcompression;
+	cvalue = toast_compress_datum(PointerGetDatum(tmp), cmethod);
+	compressed = (struct varlena *) DatumGetPointer(cvalue);
+	to_store = (compressed != NULL) ? compressed : tmp;
+
 	/* Core writer: allocates value id, writes chunks into rel's TOAST rel. */
-	ext_datum = toast_save_datum(req->rel, PointerGetDatum(tmp), NULL,
+	ext_datum = toast_save_datum(req->rel, PointerGetDatum(to_store), NULL,
 								 req->toast_options);
 	ext = (struct varlena *) DatumGetPointer(ext_datum);
 	Assert(VARATT_IS_EXTERNAL_ONDISK(ext));
 	VARATT_EXTERNAL_GET_POINTER(ve, ext);
+
+	/* The logical raw size must round-trip through the external pointer. */
+	Assert(ve.va_rawsize == (int32) req->logical_size);
+
+	/* Record the method actually used, derived from what was stored. */
+	if (VARATT_EXTERNAL_IS_COMPRESSED(ve))
+	{
+		ToastCompressionId cmid = VARATT_EXTERNAL_GET_COMPRESS_METHOD(ve);
+
+		if (cmid == TOAST_PGLZ_COMPRESSION_ID)
+			vrcomp = VR_COMPRESSION_PGLZ;
+		else if (cmid == TOAST_LZ4_COMPRESSION_ID)
+			vrcomp = VR_COMPRESSION_LZ4;
+		else
+			elog(ERROR, "vr_toast_body_save: unexpected compression id %d",
+				 (int) cmid);
+	}
+	else
+		vrcomp = VR_COMPRESSION_NONE;
 
 	/* Assemble the persistent VR pointer in the caller's context. */
 	oldcxt = MemoryContextSwitchTo(req->mcxt);
@@ -165,13 +223,16 @@ vr_toast_body_save(const VrBodySaveRequest *req)
 	vr = (varatt_vr *) VARDATA_EXTERNAL(result);
 	vr->vr_kind = (uint8) req->kind;
 	vr->vr_version = req->version;
-	vr->vr_flags = req->flags;
+	/* the substrate owns the compression bits; preserve other caller flags */
+	vr->vr_flags = (uint16) ((req->flags & ~VR_FLAG_COMPRESSION_MASK) | vrcomp);
 	vr->vr_logical_size = (int32) req->logical_size;
-	vr->vr_body_size = (int32) req->body_size;
+	vr->vr_body_size = (int32) VARATT_EXTERNAL_GET_EXTSIZE(ve);
 	vr->vr_storage_oid = ve.va_toastrelid;
 	vr->vr_valueid = ve.va_valueid;
 	MemoryContextSwitchTo(oldcxt);
 
+	if (compressed != NULL)
+		pfree(compressed);
 	pfree(tmp);
 	pfree(ext);
 
@@ -218,10 +279,12 @@ vr_make_save_body(Relation rel, AttrNumber attnum,
  * vr_toast_body_copy_to_relation
  *
  * Per-tuple safe relocate for a heap rewrite (VACUUM FULL, CLUSTER, REPACK) or
- * a cross-relation movement: read the old VR body verbatim from its current
- * storage and save a fresh copy into new_rel's TOAST relation, returning a new
- * persistent VARTAG_VR whose locator names new_rel's reltoastrelid.  The
- * kind/version/flags/logical_size/body_size header fields are preserved.
+ * a cross-relation movement: read the old VR body as its logical (decompressed)
+ * bytes from its current storage and save a fresh copy into new_rel's TOAST
+ * relation (the substrate re-applies the target attribute's compression),
+ * returning a new persistent VARTAG_VR whose locator names new_rel's
+ * reltoastrelid.  The kind/version/logical_size header fields are preserved;
+ * the compression method is recomputed by the fresh save.
  *
  * Copy, not move: the OLD body is NOT deleted here.  Its lifetime stays with
  * its original owner - on a heap rewrite the old relfilenode and its TOAST
@@ -240,7 +303,7 @@ vr_toast_body_copy_to_relation(Datum old_stored, Relation new_rel,
 {
 	struct varlena *old = (struct varlena *) DatumGetPointer(old_stored);
 	varatt_vr	v;
-	Size		body_size;
+	Size		logical_body;
 	char	   *body;
 	VrBodySaveRequest req;
 	Datum		result;
@@ -255,21 +318,24 @@ vr_toast_body_copy_to_relation(Datum old_stored, Relation new_rel,
 				 errmsg("cannot relocate a value representation: target relation has no TOAST storage")));
 
 	VARATT_EXTERNAL_GET_POINTER(v, old);
-	body_size = (Size) v.vr_body_size;
+	logical_body = (Size) v.vr_logical_size - VARHDRSZ;
 
-	/* Read the old body verbatim from its current (source) storage. */
-	body = (char *) palloc(body_size > 0 ? body_size : 1);
-	vr_toast_body_read(old_stored, 0, body_size, body);
+	/*
+	 * Read the old body as its LOGICAL (decompressed) bytes from the source
+	 * storage; the fresh save re-applies the target attribute's compression.
+	 */
+	body = (char *) palloc(logical_body > 0 ? logical_body : 1);
+	vr_toast_body_read(old_stored, 0, logical_body, body);
 
 	/* Save a fresh, independent copy into the target relation's TOAST. */
 	req.rel = new_rel;
 	req.attnum = attnum;
 	req.kind = (VrKind) v.vr_kind;
 	req.version = v.vr_version;
-	req.flags = v.vr_flags;
+	req.flags = v.vr_flags;		/* save() normalizes the compression bits */
 	req.logical_size = (Size) v.vr_logical_size;
 	req.body = body;
-	req.body_size = body_size;
+	req.body_size = logical_body;
 	req.toast_options = ctx->toast_options;
 	req.mcxt = ctx->mcxt;
 	result = vr_toast_body_save(&req);
@@ -282,7 +348,10 @@ vr_toast_body_copy_to_relation(Datum old_stored, Relation new_rel,
 /*
  * vr_toast_body_size
  *
- * Physical body byte count of a persistent VR value, read from the header.
+ * The SAVED PHYSICAL stream size of a persistent VR value (descriptor
+ * vr_body_size), read from the header.  This is the compressed size when the
+ * body is compressed; it is NOT the logical body size.  Use the public
+ * vr_body_size() for the logical (decompressed) size that flatten consumes.
  */
 Size
 vr_toast_body_size(Datum stored_value)
@@ -298,42 +367,71 @@ vr_toast_body_size(Datum stored_value)
 /*
  * vr_toast_body_read
  *
- * Read [offset, offset+len) of a persistent VR body into buf.  Reconstruct the
- * ordinary on-disk TOAST pointer for the locator and fetch through
- * detoast_external_attr.  The body was stored uncompressed, so va_rawsize =
- * body_size + VARHDRSZ and the external (saved) size equals body_size.
+ * Read [offset, offset+len) of the LOGICAL (decompressed) VR body into buf.
+ * Reconstruct the ordinary on-disk TOAST pointer for the locator - carrying the
+ * recorded compression method and the logical raw size - and fetch through
+ * detoast_attr, which reassembles the chunks and decompresses on the method
+ * bits.  offset and len are in logical space.  Unsupported flag bits or an
+ * unknown method ERROR.
  */
 void
 vr_toast_body_read(Datum stored_value, Size offset, Size len, void *buf)
 {
 	struct varlena *attr = (struct varlena *) DatumGetPointer(stored_value);
 	varatt_vr	v;
-	Size		body_size;
+	uint16		vrcomp;
+	Size		logical_size;
 	varatt_external ve;
 	struct varlena *extptr;
 	struct varlena *full;
 
 	Assert(VARATT_IS_EXTERNAL_VR(attr));
 	VARATT_EXTERNAL_GET_POINTER(v, attr);
-	body_size = (Size) v.vr_body_size;
 
-	if (offset > body_size || len > body_size - offset)
+	if ((v.vr_flags & ~VR_FLAG_KNOWN_MASK) != 0)
+		elog(ERROR, "VR body read: unsupported flags 0x%04x",
+			 (unsigned) v.vr_flags);
+
+	vrcomp = v.vr_flags & VR_FLAG_COMPRESSION_MASK;
+	logical_size = (Size) v.vr_logical_size - VARHDRSZ;
+
+	if (offset > logical_size || len > logical_size - offset)
 		elog(ERROR,
 			 "VR body read out of range: offset %zu len %zu body %zu",
-			 offset, len, body_size);
+			 offset, len, logical_size);
 
 	memset(&ve, 0, sizeof(ve));
-	ve.va_rawsize = (int32) (body_size + VARHDRSZ);
-	ve.va_extinfo = (uint32) body_size; /* uncompressed: extsize == rawsize - VARHDRSZ */
+	ve.va_rawsize = (int32) v.vr_logical_size; /* logical size incl VARHDRSZ */
 	ve.va_valueid = v.vr_valueid;
 	ve.va_toastrelid = v.vr_storage_oid;
+
+	switch (vrcomp)
+	{
+		case VR_COMPRESSION_NONE:
+			/* extsize == rawsize - VARHDRSZ => stored uncompressed */
+			ve.va_extinfo = (uint32) v.vr_body_size;
+			break;
+		case VR_COMPRESSION_PGLZ:
+			VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(ve,
+														 (uint32) v.vr_body_size,
+														 TOAST_PGLZ_COMPRESSION_ID);
+			break;
+		case VR_COMPRESSION_LZ4:
+			VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(ve,
+														 (uint32) v.vr_body_size,
+														 TOAST_LZ4_COMPRESSION_ID);
+			break;
+		default:
+			elog(ERROR, "VR body read: unknown compression method %u",
+				 (unsigned) vrcomp);
+	}
 
 	extptr = (struct varlena *) palloc(VARHDRSZ_EXTERNAL + sizeof(varatt_external));
 	SET_VARTAG_EXTERNAL(extptr, VARTAG_ONDISK);
 	memcpy(VARDATA_EXTERNAL(extptr), &ve, sizeof(ve));
 
-	full = detoast_external_attr(extptr);
-	Assert((Size) VARSIZE_ANY_EXHDR(full) == body_size);
+	full = detoast_attr(extptr);
+	Assert((Size) VARSIZE_ANY_EXHDR(full) == logical_size);
 	if (len > 0)
 		memcpy(buf, VARDATA_ANY(full) + offset, len);
 
@@ -351,8 +449,19 @@ vr_body_size(Datum stored_value)
 {
 	struct varlena *attr = (struct varlena *) DatumGetPointer(stored_value);
 
+	/*
+	 * The LOGICAL (decompressed) body size that flatten consumes: it pairs with
+	 * vr_body_read, which returns logical bytes.  This is vr_logical_size minus
+	 * VARHDRSZ, independent of how the physical stream is compressed.  (The
+	 * physical/saved stream size is vr_toast_body_size.)
+	 */
 	if (VARATT_IS_EXTERNAL_VR(attr))
-		return vr_toast_body_size(stored_value);
+	{
+		varatt_vr	v;
+
+		VARATT_EXTERNAL_GET_POINTER(v, attr);
+		return (Size) v.vr_logical_size - VARHDRSZ;
+	}
 
 	elog(ERROR, "vr_body_size: not a persistent value representation");
 	return 0;					/* unreachable; keep the compiler quiet */

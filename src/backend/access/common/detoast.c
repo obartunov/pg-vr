@@ -58,7 +58,7 @@ vr_detoast_flatten(varlena *attr)
 		elog(ERROR, "vr_detoast_flatten called on a non-VR datum");
 
 	/* v1 readers ERROR on unknown persistent flag bits */
-	if (hdr.flags != 0)
+	if ((hdr.flags & ~VR_FLAG_KNOWN_MASK) != 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("unsupported VR flags 0x%x", (unsigned int) hdr.flags)));

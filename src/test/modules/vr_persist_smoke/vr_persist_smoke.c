@@ -141,6 +141,19 @@ vr_persist_disarm(PG_FUNCTION_ARGS)
  * stored, reading the RAW datum (no detoast).  Reports counts and, for VR rows,
  * whether storage_oid equals the relation's reltoastrelid.
  */
+/* Name of the VR body compression method recorded in vr_flags. */
+static const char *
+vr_comp_name(uint16 flags)
+{
+	switch (flags & VR_FLAG_COMPRESSION_MASK)
+	{
+		case VR_COMPRESSION_NONE: return "none";
+		case VR_COMPRESSION_PGLZ: return "pglz";
+		case VR_COMPRESSION_LZ4:  return "lz4";
+		default: return "unknown";
+	}
+}
+
 PG_FUNCTION_INFO_V1(vr_persist_probe);
 Datum
 vr_persist_probe(PG_FUNCTION_ARGS)
@@ -155,7 +168,8 @@ vr_persist_probe(PG_FUNCTION_ARGS)
 				ondisk = 0,
 				inlined = 0;
 	bool		vr_storage_ok = true;
-	int64		vr_body_size_seen = -1;
+	int64		logical_size_seen = -1;
+	uint16		comp_seen = VR_COMPRESSION_NONE;
 	StringInfoData s;
 
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
@@ -175,7 +189,8 @@ vr_persist_probe(PG_FUNCTION_ARGS)
 
 			VARATT_EXTERNAL_GET_POINTER(hdr, v);
 			vr++;
-			vr_body_size_seen = hdr.vr_body_size;
+			logical_size_seen = (int64) hdr.vr_logical_size - VARHDRSZ;
+			comp_seen = hdr.vr_flags & VR_FLAG_COMPRESSION_MASK;
 			if (hdr.vr_storage_oid != reltoastrelid)
 				vr_storage_ok = false;
 		}
@@ -191,10 +206,10 @@ vr_persist_probe(PG_FUNCTION_ARGS)
 
 	initStringInfo(&s);
 	appendStringInfo(&s,
-					 "rows=%lld vr=%lld ondisk=%lld inline=%lld vr_storage_ok=%d vr_body_size=%lld",
+					 "rows=%lld vr=%lld ondisk=%lld inline=%lld vr_storage_ok=%d logical_size=%lld comp=%s",
 					 (long long) rows, (long long) vr, (long long) ondisk,
 					 (long long) inlined, vr_storage_ok ? 1 : 0,
-					 (long long) vr_body_size_seen);
+					 (long long) logical_size_seen, vr_comp_name(comp_seen));
 
 	PG_RETURN_TEXT_P(cstring_to_text(s.data));
 }

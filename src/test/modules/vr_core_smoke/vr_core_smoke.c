@@ -170,9 +170,9 @@ vr_core_badflags(PG_FUNCTION_ARGS)
 {
 	char		dummy[4] = {0, 0, 0, 0};
 	struct varlena *vr = vr_make_inmem(dummy, (int32) sizeof(dummy),
-									   VR_KIND_TEST_VECTORS, 1, 0x0001);
+									   VR_KIND_TEST_VECTORS, 1, 0x0004);
 
-	(void) detoast_attr(vr);	/* expect ERROR: unsupported VR flags 0x1 */
+	(void) detoast_attr(vr);	/* expect ERROR: unsupported VR flags 0x4 */
 
 	PG_RETURN_VOID();
 }
