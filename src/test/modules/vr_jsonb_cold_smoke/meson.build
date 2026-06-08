@@ -30,4 +30,9 @@ tests += {
       'vr_jsonb_cold_smoke',
     ],
   },
+  'tap': {
+    'tests': [
+      't/001_logical_gate.pl',
+    ],
+  },
 }
