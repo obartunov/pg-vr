@@ -329,16 +329,24 @@ vr_build_source_external(const varatt_vr *v, varatt_external *ve)
  * preserved exactly; only the (storage_oid, valueid) locator changes.
  *
  * The body is fetched as-stored (detoast_external_attr does not decompress) and
- * handed to toast_save_datum, which stores an already-compressed varlena
- * verbatim and re-emits the same method and raw size on the new external
- * pointer.  WAL/space stay identical to ordinary TOAST while the relocate
- * avoids the read+decompress+save+recompress CPU of the logical path.
+ * handed to toast_save_datum together with the reconstructed source ON-DISK
+ * pointer as oldexternal.  During a heap rewrite (new_rel->rd_toastoid set) this
+ * makes toast_save_datum reuse the old body's value OID
+ * (toast_internals.c:259-262) and short-circuit a second physical write when the
+ * same body was already copied for an earlier version of the same row
+ * (toast_internals.c:281-286) - the same path ordinary TOAST takes.  So when a
+ * rewrite copies several heap versions (live + recently-dead) that share one VR
+ * body, the body is written once and all versions reference one value OID,
+ * instead of N duplicate bodies whose dead-version copies VACUUM would never
+ * reclaim (B0/F1).  Outside a rewrite (rd_toastoid unset) oldexternal is ignored
+ * and a fresh value OID is assigned, as before.  WAL/space stay identical to
+ * ordinary TOAST while the relocate avoids the read+decompress+save+recompress
+ * CPU of the logical path.
  *
- * Copy, not move: the OLD body is NOT deleted here.  Its lifetime stays with
- * its original owner - on a heap rewrite the old relfilenode and its TOAST
- * relation are dropped at the swap, reclaiming the old body; on a cross-
- * relation copy the source row still references and owns it.  The body is
- * physically re-written into new_rel, never a silent pointer copy.
+ * Copy, not move: the OLD body is NOT deleted here.  Its lifetime stays with its
+ * original owner - on a heap rewrite the old relfilenode and its TOAST relation
+ * are dropped at the swap, reclaiming the old body; on a cross-relation copy the
+ * source row still references and owns it.
  *
  * ctx->toast_options carries the surrounding heap-insert options (notably
  * HEAP_INSERT_NO_LOGICAL during a rewrite) so the copied body chunks honour the
@@ -379,8 +387,14 @@ vr_toast_body_copy_to_relation(Datum old_stored, Relation new_rel,
 	memcpy(VARDATA_EXTERNAL(src_extptr), &ve_src, sizeof(ve_src));
 	stored = detoast_external_attr(src_extptr);
 
-	/* Store the (possibly compressed) varlena verbatim into the target TOAST. */
-	ext_datum = toast_save_datum(new_rel, PointerGetDatum(stored), NULL,
+	/*
+	 * Store the (possibly compressed) varlena verbatim into the target TOAST,
+	 * passing the reconstructed source ON-DISK pointer as oldexternal.  During a
+	 * heap rewrite (new_rel->rd_toastoid set) this makes toast_save_datum reuse
+	 * the old body's value OID and short-circuit a duplicate write - see the
+	 * header comment.  Outside a rewrite, oldexternal is ignored.
+	 */
+	ext_datum = toast_save_datum(new_rel, PointerGetDatum(stored), src_extptr,
 								 ctx->toast_options);
 	ext = (struct varlena *) DatumGetPointer(ext_datum);
 	Assert(VARATT_IS_EXTERNAL_ONDISK(ext));
