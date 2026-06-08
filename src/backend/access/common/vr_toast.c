@@ -259,6 +259,24 @@ vr_make_save_body(Relation rel, AttrNumber attnum,
 {
 	VrBodySaveRequest req;
 
+	/*
+	 * B-repl gate.  A persistent VR descriptor cannot be represented by logical
+	 * decoding: the reorderbuffer reassembly and the pgoutput wire both refuse a
+	 * VR datum, so a VR value on a logically logged relation would wedge any
+	 * logical replication slot that decodes its WAL.  vr_make_save_body is the
+	 * sole persistent-VR construction primitive, so refuse here - before any body
+	 * is written, leaving no half-built state, and reaching every caller of the
+	 * primitive including direct ones that bypass the selector chokepoint.  The
+	 * decode-time refusals stay as a backstop for VR created before the relation
+	 * became logically logged.  This is a VR representation boundary, not a TOAST
+	 * rule; the rewrite/relocate path does not call this primitive, so existing
+	 * VR values stay rewriteable.
+	 */
+	if (RelationIsLogicallyLogged(rel))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("persistent value representation is not supported on logically logged relations")));
+
 	Assert(ctx != NULL);
 
 	req.rel = rel;
