@@ -276,22 +276,69 @@ vr_make_save_body(Relation rel, AttrNumber attnum,
 }
 
 /*
+ * vr_build_source_external
+ *
+ * Reconstruct the ordinary on-disk TOAST pointer naming a persistent VR body's
+ * saved stream, carrying its recorded compression method and logical raw size.
+ * Shared by the logical reader and the physical-verbatim relocate; it rejects
+ * unknown flag bits and an unknown method before the pointer is ever used.
+ */
+static void
+vr_build_source_external(const varatt_vr *v, varatt_external *ve)
+{
+	uint16		vrcomp;
+
+	if ((v->vr_flags & ~VR_FLAG_KNOWN_MASK) != 0)
+		elog(ERROR, "VR body read: unsupported flags 0x%04x",
+			 (unsigned) v->vr_flags);
+	vrcomp = v->vr_flags & VR_FLAG_COMPRESSION_MASK;
+
+	memset(ve, 0, sizeof(*ve));
+	ve->va_rawsize = (int32) v->vr_logical_size;	/* logical size incl VARHDRSZ */
+	ve->va_valueid = v->vr_valueid;
+	ve->va_toastrelid = v->vr_storage_oid;
+
+	switch (vrcomp)
+	{
+		case VR_COMPRESSION_NONE:
+			/* extsize == rawsize - VARHDRSZ => stored uncompressed */
+			ve->va_extinfo = (uint32) v->vr_body_size;
+			break;
+		case VR_COMPRESSION_PGLZ:
+			VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(*ve, (uint32) v->vr_body_size,
+														 TOAST_PGLZ_COMPRESSION_ID);
+			break;
+		case VR_COMPRESSION_LZ4:
+			VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(*ve, (uint32) v->vr_body_size,
+														 TOAST_LZ4_COMPRESSION_ID);
+			break;
+		default:
+			elog(ERROR, "VR body read: unknown compression method %u",
+				 (unsigned) vrcomp);
+	}
+}
+
+/*
  * vr_toast_body_copy_to_relation
  *
  * Per-tuple safe relocate for a heap rewrite (VACUUM FULL, CLUSTER, REPACK) or
- * a cross-relation movement: read the old VR body as its logical (decompressed)
- * bytes from its current storage and save a fresh copy into new_rel's TOAST
- * relation (the substrate re-applies the target attribute's compression),
+ * a cross-relation movement: copy the old VR body's SAVED PHYSICAL stream
+ * verbatim into new_rel's TOAST relation - no decompress and no recompress -
  * returning a new persistent VARTAG_VR whose locator names new_rel's
- * reltoastrelid.  The kind/version/logical_size header fields are preserved;
- * the compression method is recomputed by the fresh save.
+ * reltoastrelid.  kind/version/logical_size and the compression method are
+ * preserved exactly; only the (storage_oid, valueid) locator changes.
+ *
+ * The body is fetched as-stored (detoast_external_attr does not decompress) and
+ * handed to toast_save_datum, which stores an already-compressed varlena
+ * verbatim and re-emits the same method and raw size on the new external
+ * pointer.  WAL/space stay identical to ordinary TOAST while the relocate
+ * avoids the read+decompress+save+recompress CPU of the logical path.
  *
  * Copy, not move: the OLD body is NOT deleted here.  Its lifetime stays with
  * its original owner - on a heap rewrite the old relfilenode and its TOAST
  * relation are dropped at the swap, reclaiming the old body; on a cross-
- * relation copy the source row still references and owns it.  This never
- * produces a silent pointer copy into incompatible TOAST storage: the body is
- * physically re-written into new_rel.
+ * relation copy the source row still references and owns it.  The body is
+ * physically re-written into new_rel, never a silent pointer copy.
  *
  * ctx->toast_options carries the surrounding heap-insert options (notably
  * HEAP_INSERT_NO_LOGICAL during a rewrite) so the copied body chunks honour the
@@ -303,10 +350,16 @@ vr_toast_body_copy_to_relation(Datum old_stored, Relation new_rel,
 {
 	struct varlena *old = (struct varlena *) DatumGetPointer(old_stored);
 	varatt_vr	v;
-	Size		logical_body;
-	char	   *body;
-	VrBodySaveRequest req;
-	Datum		result;
+	varatt_external ve_src;
+	struct varlena *src_extptr;
+	struct varlena *stored;
+	Datum		ext_datum;
+	struct varlena *ext;
+	varatt_external ve_new;
+	struct varlena *result;
+	varatt_vr  *out;
+	uint16		vrcomp;
+	MemoryContext oldcxt;
 
 	Assert(VARATT_IS_EXTERNAL_VR(old));
 	Assert(new_rel != NULL);
@@ -318,31 +371,56 @@ vr_toast_body_copy_to_relation(Datum old_stored, Relation new_rel,
 				 errmsg("cannot relocate a value representation: target relation has no TOAST storage")));
 
 	VARATT_EXTERNAL_GET_POINTER(v, old);
-	logical_body = (Size) v.vr_logical_size - VARHDRSZ;
 
-	/*
-	 * Read the old body as its LOGICAL (decompressed) bytes from the source
-	 * storage; the fresh save re-applies the target attribute's compression.
-	 */
-	body = (char *) palloc(logical_body > 0 ? logical_body : 1);
-	vr_toast_body_read(old_stored, 0, logical_body, body);
+	/* Fetch the saved stream as-stored (still compressed if compressed). */
+	vr_build_source_external(&v, &ve_src);
+	src_extptr = (struct varlena *) palloc(VARHDRSZ_EXTERNAL + sizeof(varatt_external));
+	SET_VARTAG_EXTERNAL(src_extptr, VARTAG_ONDISK);
+	memcpy(VARDATA_EXTERNAL(src_extptr), &ve_src, sizeof(ve_src));
+	stored = detoast_external_attr(src_extptr);
 
-	/* Save a fresh, independent copy into the target relation's TOAST. */
-	req.rel = new_rel;
-	req.attnum = attnum;
-	req.kind = (VrKind) v.vr_kind;
-	req.version = v.vr_version;
-	req.flags = v.vr_flags;		/* save() normalizes the compression bits */
-	req.logical_size = (Size) v.vr_logical_size;
-	req.body = body;
-	req.body_size = logical_body;
-	req.toast_options = ctx->toast_options;
-	req.mcxt = ctx->mcxt;
-	result = vr_toast_body_save(&req);
+	/* Store the (possibly compressed) varlena verbatim into the target TOAST. */
+	ext_datum = toast_save_datum(new_rel, PointerGetDatum(stored), NULL,
+								 ctx->toast_options);
+	ext = (struct varlena *) DatumGetPointer(ext_datum);
+	Assert(VARATT_IS_EXTERNAL_ONDISK(ext));
+	VARATT_EXTERNAL_GET_POINTER(ve_new, ext);
+	Assert(ve_new.va_rawsize == (int32) v.vr_logical_size);
 
-	pfree(body);
+	/* The method round-trips verbatim through toast_save_datum. */
+	if (VARATT_EXTERNAL_IS_COMPRESSED(ve_new))
+	{
+		ToastCompressionId cmid = VARATT_EXTERNAL_GET_COMPRESS_METHOD(ve_new);
 
-	return result;
+		if (cmid == TOAST_PGLZ_COMPRESSION_ID)
+			vrcomp = VR_COMPRESSION_PGLZ;
+		else if (cmid == TOAST_LZ4_COMPRESSION_ID)
+			vrcomp = VR_COMPRESSION_LZ4;
+		else
+			elog(ERROR, "vr relocate: unexpected compression id %d", (int) cmid);
+	}
+	else
+		vrcomp = VR_COMPRESSION_NONE;
+
+	/* Assemble the new persistent VR pointer in the caller's context. */
+	oldcxt = MemoryContextSwitchTo(ctx->mcxt);
+	result = (struct varlena *) palloc0(VARHDRSZ_EXTERNAL + sizeof(varatt_vr));
+	SET_VARTAG_EXTERNAL(result, VARTAG_VR);
+	out = (varatt_vr *) VARDATA_EXTERNAL(result);
+	out->vr_kind = v.vr_kind;
+	out->vr_version = v.vr_version;
+	out->vr_flags = (uint16) ((v.vr_flags & ~VR_FLAG_COMPRESSION_MASK) | vrcomp);
+	out->vr_logical_size = v.vr_logical_size;
+	out->vr_body_size = (int32) VARATT_EXTERNAL_GET_EXTSIZE(ve_new);
+	out->vr_storage_oid = ve_new.va_toastrelid;
+	out->vr_valueid = ve_new.va_valueid;
+	MemoryContextSwitchTo(oldcxt);
+
+	pfree(stored);
+	pfree(src_extptr);
+	pfree(ext);
+
+	return PointerGetDatum(result);
 }
 
 /*
@@ -379,7 +457,6 @@ vr_toast_body_read(Datum stored_value, Size offset, Size len, void *buf)
 {
 	struct varlena *attr = (struct varlena *) DatumGetPointer(stored_value);
 	varatt_vr	v;
-	uint16		vrcomp;
 	Size		logical_size;
 	varatt_external ve;
 	struct varlena *extptr;
@@ -388,11 +465,6 @@ vr_toast_body_read(Datum stored_value, Size offset, Size len, void *buf)
 	Assert(VARATT_IS_EXTERNAL_VR(attr));
 	VARATT_EXTERNAL_GET_POINTER(v, attr);
 
-	if ((v.vr_flags & ~VR_FLAG_KNOWN_MASK) != 0)
-		elog(ERROR, "VR body read: unsupported flags 0x%04x",
-			 (unsigned) v.vr_flags);
-
-	vrcomp = v.vr_flags & VR_FLAG_COMPRESSION_MASK;
 	logical_size = (Size) v.vr_logical_size - VARHDRSZ;
 
 	if (offset > logical_size || len > logical_size - offset)
@@ -400,31 +472,8 @@ vr_toast_body_read(Datum stored_value, Size offset, Size len, void *buf)
 			 "VR body read out of range: offset %zu len %zu body %zu",
 			 offset, len, logical_size);
 
-	memset(&ve, 0, sizeof(ve));
-	ve.va_rawsize = (int32) v.vr_logical_size; /* logical size incl VARHDRSZ */
-	ve.va_valueid = v.vr_valueid;
-	ve.va_toastrelid = v.vr_storage_oid;
-
-	switch (vrcomp)
-	{
-		case VR_COMPRESSION_NONE:
-			/* extsize == rawsize - VARHDRSZ => stored uncompressed */
-			ve.va_extinfo = (uint32) v.vr_body_size;
-			break;
-		case VR_COMPRESSION_PGLZ:
-			VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(ve,
-														 (uint32) v.vr_body_size,
-														 TOAST_PGLZ_COMPRESSION_ID);
-			break;
-		case VR_COMPRESSION_LZ4:
-			VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(ve,
-														 (uint32) v.vr_body_size,
-														 TOAST_LZ4_COMPRESSION_ID);
-			break;
-		default:
-			elog(ERROR, "VR body read: unknown compression method %u",
-				 (unsigned) vrcomp);
-	}
+	/* reconstruct the source pointer (validates flags/method) */
+	vr_build_source_external(&v, &ve);
 
 	extptr = (struct varlena *) palloc(VARHDRSZ_EXTERNAL + sizeof(varatt_external));
 	SET_VARTAG_EXTERNAL(extptr, VARTAG_ONDISK);
