@@ -2811,6 +2811,36 @@ restore_tuple(BufFile *file, Relation relation, TupleTableSlot *slot)
 						errmsg("insufficient number of attributes stored separately"));
 		}
 	}
+
+#ifdef USE_ASSERT_CHECKING
+
+	/*
+	 * Invariant tripwire (assert-enabled builds only): a persistent value
+	 * representation (VR) datum must never reach the concurrent-change apply
+	 * path.  The capture-side refusal in repack_store_change rejects a captured
+	 * VR datum first, so restore_tuple should never reconstruct one.  This is
+	 * NOT a production guard -- it compiles out without assertions and makes no
+	 * production claim; it exists to trap in testing if a future change to the
+	 * capture/spill pipeline ever lets a VR datum through to apply/replay.
+	 * restore_tuple is the single reconstruction point for every applied change
+	 * (insert/update/delete), so this one check is symmetric across kinds.
+	 */
+	{
+		TupleDesc	desc = slot->tts_tupleDescriptor;
+
+		for (int i = 0; i < desc->natts; i++)
+		{
+			CompactAttribute *attr = TupleDescCompactAttr(desc, i);
+
+			if (attr->attisdropped || attr->attlen != -1 ||
+				slot_attisnull(slot, i + 1))
+				continue;
+			slot_getsomeattrs(slot, i + 1);
+			Assert(!VARATT_IS_EXTERNAL_VR(
+					   (varlena *) DatumGetPointer(slot->tts_values[i])));
+		}
+	}
+#endif
 }
 
 /*
