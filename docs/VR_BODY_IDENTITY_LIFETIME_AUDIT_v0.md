@@ -418,6 +418,29 @@ B-repl  Logical replication slot wedge (operational; EMPIRICALLY REPRODUCED).
     covered only by the decode-time backstop.  The rewrite/relocate path is
     intentionally not gated, so VACUUM FULL/CLUSTER/REPACK of pre-existing VR is
     unaffected.  Logical decoding support is not implemented.
+B-repack  REPACK CONCURRENTLY x VR concurrent-change capture (EMPIRICALLY
+    REPRODUCED, cassert build).  REPACK CONCURRENTLY captures concurrent changes
+    via an internal logical decoding worker (start_repack_decoding_worker; plugin
+    src/backend/replication/pgrepack/pgrepack.c).  When a concurrent change in the
+    repack window carries a VR datum, repack_store_change spills the decoded tuple
+    and asserts that every non-indirect external varlena is ONDISK
+    (pgrepack.c:256, Assert(VARATT_IS_EXTERNAL_ONDISK(varlen))); a VR datum
+    (VARTAG_VR=19) is external but neither INDIRECT nor ONDISK(18) -> assert fails
+    -> "REPACK decoding worker" terminated by signal 6 -> postmaster restart ->
+    crash recovery.  Non-assert risk: the assert is compiled out and the apply
+    path has no VR handling (ONDISK-only; adjust_toast_pointers also skips VR), so
+    the VR locator can dangle / be misread as a varatt_external after the toast
+    swap -> wrong read / possible corruption.  Scope: pre-existing VR with no
+    concurrent change relocates correctly (N13->N9 verified, == VF / non-concurrent
+    REPACK); the failing path is the concurrent change capture/replay side, NOT the
+    ordinary core rewrite.  The B-repl construction gate does NOT close this path:
+    it refuses VR *reconstruction* only, while a non-reconstructing same-body
+    UPDATE (or an update to another column) preserves the existing VR datum and is
+    not gated, so the datum reaches the decoder.  No fix attempted (gate stop).
+    Repro: wide VR table + overlapping "UPDATE t SET j=j" during REPACK
+    (CONCURRENTLY) t.  Next gate decides policy: (A) refuse VR relations in REPACK
+    CONCURRENTLY; (B) teach pgrepack capture to handle/flatten VR; (C) document an
+    unsupported boundary temporarily.
 ```
 
 ---

@@ -64,6 +64,7 @@ flowchart TB
   subgraph REW[Rewrite / lifecycle]
     N13["N13 rewrite drivers VF/CLUSTER/REPACK[/CONCURRENTLY]\nrepack.c:1370,266-349; rewriteheap.c:619-630"]:::core
     N9["N9 vr_toast_body_copy_to_relation (copy-not-move)\nvr_toast.c:347"]:::vr
+    N21["N21 pgrepack concurrent change capture/replay\nrepack_store_change pgrepack.c:256"]:::core
   end
 
   subgraph GC[GC / delete - intrinsic]
@@ -85,7 +86,8 @@ flowchart TB
   N5 -->|green: emit WAL| N19
   N10 --> N3
   N13 -->|green: per tuple| N9
-  N13 -.->|yellow: CONCURRENTLY path untested for VR| N9
+  N13 -.->|yellow: CONCURRENTLY bulk-copy relocate verified; driver gated by N21| N9
+  N13 ==>|RED: concurrent VR-datum capture crashes pgrepack.c:256| N21
   N13 -->|green: emit WAL| N19
   N9 -->|green: reuse valueid + verbatim| N10
   N9 -->|green: dedup probe| N11
@@ -165,6 +167,7 @@ decoding cannot represent it, not replication in general.
 | N18 | gate | `RelationIsLogicallyLogged` gate (**implemented**, vr-brepl-gate-v0) | in N5; `rel.h:721` | refuse persistent VR construction on logically-logged relations before any body write; covers N4 dispatch **and** direct API callers; does not touch N9 rewrite. ERROR "persistent value representation is not supported on logically logged relations". |
 | N19 | core | WAL stream | `XLogLogicalInfoActive`; `rel.h:721` | carries the VR datum; **no VR-specific WAL records**. Two consumers: N20 (redo) and N16 (decode). |
 | N20 | core | redo: crash recovery + physical standby replay | heap/toast redo | **no VR-specific redo**; replays heap+TOAST verbatim -> VR durable and physically replicable. |
+| N21 | core | pgrepack concurrent change capture/replay | `repack_store_change`, `pgrepack.c:256` | REPACK CONCURRENTLY change-capture spill. For a non-indirect external varlena it `Assert(VARATT_IS_EXTERNAL_ONDISK(varlen))`; a VR datum (`VARTAG_VR`=19) is external but neither INDIRECT nor ONDISK(18). **No VR branch.** Reached only when a concurrent change in the repack window carries a VR datum. |
 
 ## Edge catalog (safety)
 
@@ -175,8 +178,9 @@ decoding cannot represent it, not replication in general.
 | N5 -> N10 | stores | green | body saved via TOAST (v0) |
 | N5 -> N1 | enforces | green | I2 logical-size before any write |
 | N5 -> N19, N13 -> N19 | emits | green | construction/rewrite writes WAL |
-| N13 -> N9 | drives | green | per-tuple rehome (non-concurrent verified) |
-| N13 => N9 (CONCURRENTLY) | drives | yellow | REPACK CONCURRENTLY path **untested for VR** |
+| N13 -> N9 | drives | green | per-tuple rehome verified under scope: VF / CLUSTER / non-concurrent REPACK (value intact, valueid-stable, home-OID correct, no orphan) |
+| N13 => N9 (CONCURRENTLY) | drives | yellow | CONCURRENTLY **bulk-copy relocate** of pre-existing VR (no concurrent change) verified == VF; **not globally green** — the CONCURRENTLY driver is gated by the N21 capture blocker |
+| N13 => N21 (CONCURRENTLY capture) | captures | red | concurrent change carrying a VR datum in the repack window crashes the decoding worker at `pgrepack.c:256` (B6-class boundary); OPEN |
 | N9 -> N10 | reuses | green | valueid reuse + short-circuit (F2(a) closed B0) |
 | N9 -> N11 | probes | green | dup fast-path |
 | N9 -> N12, N5 -> N12 | must-satisfy | yellow | correct only while I1 holds |
@@ -210,7 +214,8 @@ decoding cannot represent it, not replication in general.
 | B0/F1 multi-version rewrite orphan duplication | **RESOLVED** (F2(a)) | N9->N10, N9->N11 |
 | crash recovery / physical replication | **green** — inherited by construction (I9); reasoned + insert/VF tested | N19->N20, N20->N6 |
 | B-repl logical-replication slot wedge | **CLOSED for new construction** (gate at N5, vr-brepl-gate-v0); residual pre-existing-value hazard under N16/N17 backstop | chain N5->N19=>N16; gate N18=>N5 |
-| REPACK CONCURRENTLY x VR | **OPEN — untested** | yellow N13=>N9 |
+| non-concurrent rewrite/repack relocate (VF/CLUSTER/REPACK) | **verified under scope** (value intact, single body, valueid-stable, home-OID correct, no orphan after plain VACUUM) | N13->N9 |
+| REPACK CONCURRENTLY x VR concurrent-change capture | **RED / OPEN blocker** — concurrent change carrying a VR datum crashes the decoding worker: `pgrepack.c:256`, `repack_store_change`, `Assert(VARATT_IS_EXTERNAL_ONDISK(varlen))`. cassert: crash + cluster restart. non-assert: risk of dangling/misread VR locator after toast swap. B-repl gate does **not** close this (it refuses VR *reconstruction* only; a non-reconstructing same-body UPDATE preserves the VR datum and is not gated). No fix attempted. | N13=>N21 |
 | direct-API bypass of construction gate | **closed by gate placement** | N18 at N5 |
 | B6 `vr_body_size` doc/code drift | **FIXED** (varatt.h comment now says saved physical, possibly compressed) | N1 |
 | P2 windowed read O(full body) | open scalability trap | N7 |
