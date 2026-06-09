@@ -243,6 +243,27 @@ repack_store_change(LogicalDecodingContext *ctx, Relation relation,
 			 */
 			if (VARATT_IS_EXTERNAL_INDIRECT(varlen))
 				attrs_ext = lappend(attrs_ext, varlen);
+			else if (VARATT_IS_EXTERNAL_VR(varlen))
+			{
+				/*
+				 * A persistent value representation (VR) datum carried by a
+				 * concurrent change cannot be replayed by REPACK CONCURRENTLY
+				 * in this version: the change capture/apply path handles only
+				 * ordinary on-disk TOAST pointers.  Refuse cleanly here instead
+				 * of crashing later on the on-disk assertion below; the repack
+				 * transaction aborts and the relation is left intact.  This
+				 * capture-side refusal is the sole correctness gate -- it runs
+				 * on every captured change before any apply, so the apply/replay
+				 * path is intentionally not taught to carry or flatten VR in
+				 * this milestone.  Non-concurrent REPACK, VACUUM FULL and
+				 * CLUSTER relocate VR correctly and are unaffected.
+				 */
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("REPACK CONCURRENTLY is not supported for a value representation (VR) value changed by a concurrent transaction"),
+						 errdetail("Capturing concurrent changes to VR-bearing rows is not implemented in this version."),
+						 errhint("Use REPACK without CONCURRENTLY, or VACUUM FULL / CLUSTER.")));
+			}
 			else
 			{
 				/*
