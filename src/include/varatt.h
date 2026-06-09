@@ -45,8 +45,10 @@ typedef struct varatt_external
  *
  * vr_kind selects the value representation from the fixed in-core VrKind
  * registry (access/value_representation.h).  vr_logical_size is the size of
- * the logical value; vr_body_size is the size of the (uncompressed)
- * representation body byte stream stored out-of-line in the substrate.
+ * the logical value; vr_body_size is the saved physical size of the
+ * representation body byte stream stored out-of-line in the substrate - the
+ * compressed size when the body is stored compressed.  It is not the flattened
+ * logical size, and not necessarily the uncompressed body size.
  *
  * varatt_vr and varatt_vr_inmem share a fixed header PREFIX, in this order:
  *	   vr_kind, vr_version, vr_flags, vr_logical_size, vr_body_size.
@@ -68,7 +70,9 @@ typedef struct varatt_vr
 									 * VARHDRSZ (writer contract: set it to
 									 * VARSIZE of the flattened value; callers of
 									 * toast_raw_datum_size subtract VARHDRSZ) */
-	int32		vr_body_size;	/* size of body byte stream (uncompressed) */
+	int32		vr_body_size;	/* saved physical body stream size; the
+								 * compressed size when stored compressed, not
+								 * the logical size */
 	Oid			vr_storage_oid;	/* substrate locator: TOAST relation (v1) */
 	Oid			vr_valueid;		/* substrate locator: value id within it */
 } varatt_vr;

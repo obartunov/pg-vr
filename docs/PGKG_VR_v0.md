@@ -145,7 +145,7 @@ decoding cannot represent it, not replication in general.
 
 | id | layer | entity | source | role / obligation |
 |----|-------|--------|--------|-------------------|
-| N1 | VR | `varatt_vr` | `varatt.h:61` | kind, version, flags(=physical-stream compression), `vr_logical_size`(incl VARHDRSZ), `vr_body_size`(=PHYSICAL saved size). **B6 drift:** comment says "uncompressed". `VARTAG_VR`=19; `VARTAG_VR_INMEM`=4 **reserved, no producer on current path**. |
+| N1 | VR | `varatt_vr` | `varatt.h:61` | kind, version, flags(=physical-stream compression), `vr_logical_size`(incl VARHDRSZ), `vr_body_size`(=PHYSICAL saved size, possibly compressed; B6 comment fixed). `VARTAG_VR`=19; `VARTAG_VR_INMEM`=4 **reserved, no producer on current path**. |
 | N2 | VR | VrKind + methods vtable | `value_representation.h:49-56` | the VR contract surface (make/read/...); append-only enum; `vr_lookup_methods` O(1). |
 | N3 | VR | locator (storage_oid, valueid) | `vr_toast.c:76-112` | **addressing** identity, relation-local; `storage_oid` re-homed + `valueid` reused on rewrite. NOT value identity: no content-addressing (B2). |
 | N4 | VR | selector hook (**policy**) | `toast_helper.c:368-396` | which values become VR; may decline. Sole dispatch of `m->make` (`:384`). Never trusted to self-enforce the WAL boundary. |
@@ -212,7 +212,7 @@ decoding cannot represent it, not replication in general.
 | B-repl logical-replication slot wedge | **CLOSED for new construction** (gate at N5, vr-brepl-gate-v0); residual pre-existing-value hazard under N16/N17 backstop | chain N5->N19=>N16; gate N18=>N5 |
 | REPACK CONCURRENTLY x VR | **OPEN — untested** | yellow N13=>N9 |
 | direct-API bypass of construction gate | **closed by gate placement** | N18 at N5 |
-| B6 `vr_body_size` doc/code drift | open hygiene | N1 |
+| B6 `vr_body_size` doc/code drift | **FIXED** (varatt.h comment now says saved physical, possibly compressed) | N1 |
 | P2 windowed read O(full body) | open scalability trap | N7 |
 | B1 per-relation TOAST ownership destroyed at swap | open; ownership root, gates F2(b) | N13, N12 |
 | B2 GC for shared/value identity (no content-addressing) | open, gates F2(b) | N3, N14 |

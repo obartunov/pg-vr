@@ -55,9 +55,9 @@ and, in `vr_body_size`, the *saved physical* (possibly compressed) stream size
 — `VARATT_EXTERNAL_GET_EXTSIZE(ve)` (`vr_toast.c:128-129,229,414`). The reader
 reconstructs the external pointer with the recorded compression method and
 detoasts to the logical value, and the logical-size contract is enforced before
-any write (`vr_toast.c:170-173`). Hazard: the header comment in
-`varatt.h:47-48,71` still calls `vr_body_size` "uncompressed", which contradicts
-the implementation. Conclusion: the physical stream is interchangeable
+any write (`vr_toast.c:170-173`). The header comment in `varatt.h` now matches
+the implementation: `vr_body_size` is documented as the saved physical
+(possibly compressed) stream size (B6 fixed). Conclusion: the physical stream is interchangeable
 (recompressible, relocatable, copied verbatim on rewrite); only the
 descriptor+kind contract and the reconstructed logical value are stable. Fix
 the stale comment before any identity reasoning leans on the field name.
@@ -394,9 +394,9 @@ B4  Crash recovery: today body durability == heap-tuple durability; a decoupled
     never unreferenced-live).
 B5  Logical decoding: VR is currently refused (I7); identity preservation
     sharpens, not relaxes, the "what does the stream carry" question.
-B6  Contract hygiene: vr_body_size is physical in code but documented as
-    "uncompressed" in varatt.h:47-48,71. Fix the comment before any identity
-    reasoning relies on the descriptor; define identity on (kind, version,
+B6  Contract hygiene (FIXED): vr_body_size is physical in code; the varatt.h
+    comment is now corrected to say saved physical (possibly compressed) stream
+    size, not "uncompressed".  Identity is defined on (kind, version,
     logical_size, validated logical content), never on the physical field.
 B-repl  Logical replication slot wedge (operational; EMPIRICALLY REPRODUCED).
     A VR datum reaching logical decoding raises ERROR (reorderbuffer.c:5172-5175
