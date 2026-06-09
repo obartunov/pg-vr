@@ -436,11 +436,35 @@ B-repack  REPACK CONCURRENTLY x VR concurrent-change capture (EMPIRICALLY
     ordinary core rewrite.  The B-repl construction gate does NOT close this path:
     it refuses VR *reconstruction* only, while a non-reconstructing same-body
     UPDATE (or an update to another column) preserves the existing VR datum and is
-    not gated, so the datum reaches the decoder.  No fix attempted (gate stop).
+    not gated, so the datum reaches the decoder.
+    RESOLUTION (A-narrow, v0 production safety policy): repack_store_change
+    (capture) refuses a captured VR datum with a clean
+    ereport(ERRCODE_FEATURE_NOT_SUPPORTED) instead of asserting ONDISK.  This
+    capture-side refusal is the SOLE correctness gate: it runs on every captured
+    change before any apply, so the apply/replay path (adjust_toast_pointers,
+    apply_concurrent_*) is intentionally NOT taught to carry or flatten VR and
+    carries no production VR guard.  In assert-enabled builds, a symmetric
+    invariant tripwire in restore_tuple (the single reconstruction point for
+    every applied insert/update/delete) asserts that no VR datum reaches apply;
+    this is defense-in-depth only, not the correctness basis (it compiles out
+    without assertions and makes no production claim).  The worker error propagates through the repack error queue and
+    the repack aborts; no crash, no swap, no replication-slot leak, relation left
+    intact.  The refusal is mid-flight (raised from the worker after the bulk
+    copy), not pre-flight, because there is no cheap catalog signal that a relation
+    carries VR.  Verified (real run): former crash repro now yields a clean ERROR
+    with the cluster up, 0 replication slots after, relation readable, and
+    non-concurrent REPACK succeeding afterward; REPACK CONCURRENTLY with no
+    concurrent change stays green; VF / CLUSTER / non-concurrent REPACK stay green;
+    a concurrent change to a non-VR (ordinary TOAST) row is not falsely refused.
     Repro: wide VR table + overlapping "UPDATE t SET j=j" during REPACK
-    (CONCURRENTLY) t.  Next gate decides policy: (A) refuse VR relations in REPACK
-    CONCURRENTLY; (B) teach pgrepack capture to handle/flatten VR; (C) document an
-    unsupported boundary temporarily.
+    (CONCURRENTLY) t.
+    FOLLOW-UP (not implemented): B-carry -- carry the unchanged VR datum through
+    capture and reuse the adjust_toast_pointers substitution from the N9-relocated
+    ondisk_tuple (home-OID free).  Depends on checklist: (a) consistent point
+    before any concurrent change is captured; (b) every VR (re)construction routes
+    through vr_make_save_body and is gated; (c) VR inside an identity index matches
+    via flattened keys, not raw descriptors.  B-flatten (logical-value
+    reconstruction at capture) is deferred to the logical-value-capture track.
 ```
 
 ---

@@ -1359,6 +1359,26 @@ body root / locator validation
 
 The current descriptor must not bake in TOAST chunking or Large Object page layout. It should identify a body root or body-storage-private locator, not expose internal chunks/pages as VR identity.
 
+### REPACK CONCURRENTLY x VR (v0 production boundary, A-narrow)
+
+REPACK CONCURRENTLY captures concurrent changes through an internal logical
+decoding worker, which cannot represent a persistent VR datum. v0 policy is a
+fail-closed refusal at capture: `repack_store_change` refuses a captured VR datum
+with `ERRCODE_FEATURE_NOT_SUPPORTED`, the repack aborts cleanly (no crash, no
+swap, no replication-slot leak) and the relation is left intact. The capture-side
+refusal is the sole correctness gate -- it runs on every captured change before
+any apply -- so the apply/replay path is intentionally not taught to carry or
+flatten VR in this milestone, and there is no production apply guard. In
+assert-enabled builds a symmetric invariant tripwire in `restore_tuple` (the
+single reconstruction point for every applied change) asserts that no VR datum
+reaches apply -- defense-in-depth only, not the correctness basis. Debt: the refusal
+is mid-flight, not pre-flight, because there is no cheap catalog signal that a
+relation carries VR. Pre-existing VR with no concurrent change relocates
+correctly; VACUUM FULL / CLUSTER / non-concurrent REPACK are unaffected. Carrying
+the unchanged VR through capture (B-carry) is a feasible follow-up; logical-value
+reconstruction at capture (B-flatten) is deferred to the logical-value-capture /
+logical replication track.
+
 ## 19. Summary
 
 The design rule is:
