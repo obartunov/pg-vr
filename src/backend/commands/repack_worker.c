@@ -27,6 +27,7 @@
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
 #include "utils/memutils.h"
+#include "utils/snapmgr.h"
 
 #define REPL_PLUGIN_NAME   "pgrepack"
 
@@ -66,6 +67,7 @@ RepackWorkerMain(Datum main_arg)
 	LogicalDecodingContext *decoding_ctx;
 	SharedFileSet *sfs;
 	Snapshot	snapshot;
+	Snapshot	registered_snapshot;
 
 	am_repack_worker = true;
 
@@ -144,6 +146,27 @@ RepackWorkerMain(Datum main_arg)
 	export_initial_snapshot(snapshot, shared);
 
 	/*
+	 * Keep the initial snapshot registered for the whole decoding phase.
+	 *
+	 * Capturing a value representation flattens it at capture time, which
+	 * reads its TOAST-backed body from live storage inside the change
+	 * callback; toast access requires an oldest registered/active snapshot
+	 * (get_toast_snapshot), and a fresh one cannot be taken under the
+	 * historic snapshot.
+	 *
+	 * This deliberately retains this process's xmin at the snapshot's xmin:
+	 * without a registered snapshot the InvalidateCatalogSnapshot() below
+	 * (or any later SnapshotResetXmin()) would clear the MyProc->xmin that
+	 * SnapBuildInitialSnapshot() pinned, leaving toast reads unprotected.
+	 * It does not hold the GLOBAL data horizon back any further than the
+	 * decoding setup already does: the slot was created with
+	 * need_full_snapshot, so its effective_xmin pins at least as old a data
+	 * horizon for the slot's lifetime (which is why the body chunks this
+	 * worker reads cannot be pruned during the window).
+	 */
+	registered_snapshot = RegisterSnapshot(snapshot);
+
+	/*
 	 * Only historic snapshots should be used now. Do not let us restrict the
 	 * progress of xmin horizon.
 	 */
@@ -159,6 +182,7 @@ RepackWorkerMain(Datum main_arg)
 	}
 
 	/* Cleanup. */
+	UnregisterSnapshot(registered_snapshot);
 	repack_cleanup_logical_decoding(decoding_ctx);
 	CommitTransactionCommand();
 }

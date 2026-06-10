@@ -1935,6 +1935,7 @@
   max => 'MAX_KILOBYTES',
 },
 
+
 { name => 'maintenance_io_concurrency', type => 'int', context => 'PGC_USERSET', group => 'RESOURCES_IO',
   short_desc => 'A variant of "effective_io_concurrency" that is used for maintenance work.',
   long_desc => '0 disables simultaneous requests.',
@@ -3423,6 +3424,16 @@
   short_desc => 'Enables vacuum to truncate empty pages at the end of the table.',
   variable => 'vacuum_truncate',
   boot_val => 'true',
+},
+
+{ name => 'vr_logical_capture_limit', type => 'int', context => 'PGC_SIGHUP', group => 'RESOURCES_MEM',
+  short_desc => 'Maximum size of a value representation that logical capture will materialize.',
+  long_desc => 'A value representation whose logical size exceeds this is refused on logical capture paths (logical decoding, REPACK CONCURRENTLY change capture). The limit applies in the process performing the capture, such as the REPACK decoding worker, not in the session that issued the command. 0 refuses all value representations.',
+  flags => 'GUC_UNIT_KB',
+  variable => 'vr_logical_capture_limit',
+  boot_val => '1024',
+  min => '0',
+  max => 'MAX_KILOBYTES',
 },
 
 { name => 'wal_block_size', type => 'int', context => 'PGC_INTERNAL', group => 'PRESET_OPTIONS',

@@ -13,6 +13,8 @@
 #include "postgres.h"
 
 #include "access/detoast.h"
+#include "access/htup_details.h"
+#include "access/value_representation.h"
 #include "commands/repack_internal.h"
 #include "replication/snapbuild.h"
 #include "utils/memutils.h"
@@ -177,6 +179,7 @@ repack_store_change(LogicalDecodingContext *ctx, Relation relation,
 	MemoryContext oldcxt;
 	BufFile    *file;
 	List	   *attrs_ext = NIL;
+	List	   *vr_attnos = NIL;
 	int			natt_ext;
 
 	dstate = (RepackDecodingState *) ctx->output_writer_private;
@@ -243,6 +246,32 @@ repack_store_change(LogicalDecodingContext *ctx, Relation relation,
 			 */
 			if (VARATT_IS_EXTERNAL_INDIRECT(varlen))
 				attrs_ext = lappend(attrs_ext, varlen);
+			else if (VARATT_IS_VR(varlen))
+			{
+				/*
+				 * Flatten-on-capture: a value representation (VR) datum must
+				 * not cross into the spill file, because its substrate
+				 * locator names storage that the relfilenode swap is about
+				 * to invalidate (and the apply side must never preserve a
+				 * stale locator).  Remember the attribute; after the loop
+				 * the tuple is re-formed with the VR datums replaced by
+				 * their ordinary logical values, so only logical bytes are
+				 * spilled and the normal write path decides the new
+				 * representation at apply.  Accepted v0 semantics: if no
+				 * selection policy opts the applied value back into a VR,
+				 * a captured row's value becomes ordinary TOAST/plain in
+				 * the new heap - logical capture preserves the value, not
+				 * the representation.
+				 *
+				 * This is the no-chunk capture slice: a chunk-writing change
+				 * (a transaction that wrote TOAST chunks) is refused earlier
+				 * by ReorderBufferToastReplace and never reaches this
+				 * callback with a VR datum.  Above vr_logical_capture_limit
+				 * the flatten below refuses deterministically and the
+				 * REPACK fails cleanly.
+				 */
+				vr_attnos = lappend_int(vr_attnos, i);
+			}
 			else
 			{
 				/*
@@ -257,11 +286,42 @@ repack_store_change(LogicalDecodingContext *ctx, Relation relation,
 			}
 		}
 
+		/*
+		 * Replace each captured VR datum with its flattened logical value
+		 * and re-form the tuple.  The re-formed tuple lives in change_cxt
+		 * (reset after the write); indirect-external attributes, if any,
+		 * keep their pointers in the re-formed tuple, so the
+		 * scan-for-indirect pairing on the restore side is unaffected.
+		 */
+		if (vr_attnos != NIL)
+		{
+			Datum	   *values;
+			bool	   *isnull;
+			HeapTuple	newtup;
+
+			slot_getallattrs(slot);
+
+			values = (Datum *) palloc(desc->natts * sizeof(Datum));
+			isnull = (bool *) palloc(desc->natts * sizeof(bool));
+			memcpy(values, slot->tts_values, desc->natts * sizeof(Datum));
+			memcpy(isnull, slot->tts_isnull, desc->natts * sizeof(bool));
+
+			foreach_int(attno, vr_attnos)
+				values[attno] = vr_capture_logical_value(values[attno],
+														 dstate->change_cxt);
+
+			newtup = heap_form_tuple(desc, values, isnull);
+			newtup->t_self = tuple->t_self;
+			newtup->t_tableOid = tuple->t_tableOid;
+			tuple = newtup;
+		}
+
 		ExecClearTuple(slot);
 	}
 
 	/*
-	 * First, write the original heap tuple, prefixed by its length.  Note
+	 * First, write the heap tuple (re-formed above if it carried a value
+	 * representation), prefixed by its length.  Note
 	 * that the external-toast tag for each toasted attribute will be present
 	 * in what we write, so that we know where to restore each one later.
 	 */

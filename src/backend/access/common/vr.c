@@ -431,3 +431,74 @@ vr_read_supported(const VrHeaderInfo *hdr)
 {
 	return (hdr->flags & ~VR_FLAG_GENERIC_KNOWN_MASK) == 0;
 }
+
+/*
+ * Per-value bound for logical capture, in kilobytes (GUC).  0 refuses every
+ * VR datum at capture, restoring the pure fail-closed boundary.
+ */
+int			vr_logical_capture_limit = 1024;
+
+/*
+ * vr_capture_logical_value
+ *
+ * The shared logical-value capture seam: physical VR datum -> ordinary
+ * logical varlena Datum, allocated in the caller-provided context.  Intended
+ * consumers are the logical capture paths (reorderbuffer reassembly, pgoutput
+ * serialization, pgrepack change capture); they receive only the logical
+ * value and never see the VR header, kind, or substrate locator.
+ *
+ * Fail-closed, in this order, before any body access:
+ *   1. non-VR datum                      -> internal ERROR (caller bug);
+ *   2. unknown persistent flag bits      -> ERRCODE_FEATURE_NOT_SUPPORTED;
+ *   3. logical size above the capture bound (vr_logical_capture_limit)
+ *                                        -> ERRCODE_FEATURE_NOT_SUPPORTED,
+ *      deterministic: depends only on the header and the GUC.
+ *
+ * Under the bound the value is fully materialized via the kind's flatten
+ * method, which must be pure/catalog-free and allocate in cxt.  Both the
+ * persistent (VARTAG_VR) and the transient (VARTAG_VR_INMEM) form are
+ * accepted; nothing produces the transient form yet, so that arm becomes
+ * reachable only when a decode-stream resolver exists.
+ *
+ * The bound makes threshold-bounded full materialization an interface proof
+ * on bounded values, not production coverage of arbitrarily large bodies:
+ * lifting it requires bounded/streaming reconstruction, deliberately out of
+ * scope here.
+ */
+Datum
+vr_capture_logical_value(Datum value, MemoryContext cxt)
+{
+	VrHeaderInfo hdr;
+	const ValueRepresentationMethods *methods;
+	Datum		result;
+
+	if (!vr_header_info(value, &hdr))
+		elog(ERROR, "vr_capture_logical_value called on a non-VR datum");
+
+	if (!vr_read_supported(&hdr))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("unsupported VR flags 0x%x", (unsigned int) hdr.flags)));
+
+	if (hdr.logical_size > (Size) vr_logical_capture_limit * 1024)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("logical capture of a value representation exceeds \"vr_logical_capture_limit\""),
+				 errdetail("Logical size is %zu bytes, limit is %zu bytes.",
+						   hdr.logical_size,
+						   (Size) vr_logical_capture_limit * 1024),
+				 errhint("Increase \"vr_logical_capture_limit\".")));
+
+	methods = vr_lookup_methods(hdr.kind);
+	if (methods == NULL || methods->flatten == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("unsupported VR kind %d", (int) hdr.kind)));
+
+	result = methods->flatten(value, cxt);
+
+	/* flatteners are not allowed to produce compressed/short/external output */
+	Assert(!VARATT_IS_EXTENDED(DatumGetPointer(result)));
+
+	return result;
+}

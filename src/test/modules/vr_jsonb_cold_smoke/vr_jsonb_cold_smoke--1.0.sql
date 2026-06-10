@@ -9,3 +9,6 @@ AS 'MODULE_PATHNAME', 'vr_jsonb_cold_disarm' LANGUAGE C;
 
 CREATE FUNCTION vr_jsonb_cold_probe(rel regclass) RETURNS text
 AS 'MODULE_PATHNAME', 'vr_jsonb_cold_probe' LANGUAGE C STRICT;
+
+CREATE FUNCTION vr_jsonb_cold_capture(j jsonb) RETURNS jsonb
+AS 'MODULE_PATHNAME', 'vr_jsonb_cold_capture' LANGUAGE C STRICT;

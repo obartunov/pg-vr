@@ -171,3 +171,27 @@ vr_jsonb_cold_probe(PG_FUNCTION_ARGS)
 
 	PG_RETURN_TEXT_P(cstring_to_text(s.data));
 }
+
+/*
+ * vr_jsonb_cold_capture(jsonb) RETURNS jsonb
+ *
+ * Test wrapper over the shared logical-value capture seam
+ * (vr_capture_logical_value).  When the argument arrives as the stored VR
+ * datum (a plain Var of an armed column), it is captured through the seam,
+ * exercising the threshold and the flatten dispatch exactly as a logical
+ * capture consumer would.  The executor may instead hand us an
+ * already-materialized ordinary copy (e.g. through a projection); that is
+ * returned unchanged, so pair assertions with vr_jsonb_cold_probe() to know
+ * the stored form really is VR.
+ */
+PG_FUNCTION_INFO_V1(vr_jsonb_cold_capture);
+Datum
+vr_jsonb_cold_capture(PG_FUNCTION_ARGS)
+{
+	Datum		raw = PG_GETARG_DATUM(0);
+
+	if (VARATT_IS_VR(DatumGetPointer(raw)))
+		PG_RETURN_DATUM(vr_capture_logical_value(raw, CurrentMemoryContext));
+
+	PG_RETURN_DATUM(raw);
+}

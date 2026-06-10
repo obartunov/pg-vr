@@ -84,6 +84,27 @@ extern bool vr_header_info(Datum stored_value, VrHeaderInfo *out);
 extern bool vr_read_supported(const VrHeaderInfo *hdr);
 
 /*
+ * Logical-value capture (VR-owned policy).
+ *
+ * Materialize the logical value a VR datum denotes into an ordinary flat
+ * varlena Datum allocated in the caller-provided MemoryContext.  This is the
+ * single seam through which a physical VR datum may leave VR-aware code into
+ * a logical capture path (logical decoding, pgoutput, pgrepack change
+ * capture): the consumer receives only the logical value; the substrate
+ * locator is consumed inside VR code and never crosses the seam.
+ *
+ * Works on both the persistent (VARTAG_VR) and the transient in-memory
+ * (VARTAG_VR_INMEM) form.  Fail-closed: a value whose logical size exceeds
+ * vr_logical_capture_limit is refused with a deterministic
+ * ERRCODE_FEATURE_NOT_SUPPORTED error before any body access, so capture-side
+ * worker memory stays bounded by policy.  ERROR on a non-VR datum.
+ */
+extern Datum vr_capture_logical_value(Datum value, MemoryContext cxt);
+
+/* Per-value capture bound in kilobytes; 0 refuses all VR capture. */
+extern PGDLLIMPORT int vr_logical_capture_limit;
+
+/*
  * Transient in-memory VR body form.
  *
  * Logical decoding may construct a runtime-only VR datum whose body is an
