@@ -12,7 +12,9 @@
  * This increment provides only the locator / ownership / delete trio:
  *
  *	  vr_toast_body_delete  - reclaim a body by (storage_oid, valueid)
- *	  vr_toast_get_locator  - read the substrate locator of a persistent VR
+ *	  vr_get_body_locator   - read the substrate locator of a persistent VR
+ *	  vr_has_external_body  - whether a VR owns an out-of-line body (via locator)
+ *	  vr_rewrite_action     - keep / rehome / flatten disposition for a store
  *	  vr_toast_same_body    - whether two persistent VR datums share one body
  *
  * The body save/copy/read helpers and the transient in-memory wrapper are
@@ -63,7 +65,7 @@ vr_toast_body_delete(Oid storage_oid, Oid valueid, bool is_speculative)
 }
 
 /*
- * vr_toast_get_locator
+ * vr_get_body_locator
  *
  * Read the substrate locator (storage_oid, valueid) of a PERSISTENT VR datum.
  * Returns false for any non-VR datum and for the transient in-memory VR form
@@ -73,7 +75,7 @@ vr_toast_body_delete(Oid storage_oid, Oid valueid, bool is_speculative)
  * vr_header_info(), so type code can neither read nor fabricate locators.
  */
 bool
-vr_toast_get_locator(Datum stored_value, VrToastLocator *out)
+vr_get_body_locator(Datum stored_value, VrToastLocator *out)
 {
 	struct varlena *attr = (struct varlena *) DatumGetPointer(stored_value);
 	varatt_vr	v;
@@ -115,10 +117,60 @@ vr_toast_same_body(Datum a, Datum b)
 	VrToastLocator la;
 	VrToastLocator lb;
 
-	if (!vr_toast_get_locator(a, &la) || !vr_toast_get_locator(b, &lb))
+	if (!vr_get_body_locator(a, &la) || !vr_get_body_locator(b, &lb))
 		return false;
 
 	return la.storage_oid == lb.storage_oid && la.valueid == lb.valueid;
+}
+
+/*
+ * vr_has_external_body
+ *
+ * True iff a persistent VR datum owns an out-of-line body in the substrate.
+ * Defined THROUGH vr_get_body_locator() so that locator existence is the single
+ * source of truth: an inline self-contained VR (and any non-VR datum) exposes
+ * no locator and therefore has no external body.
+ */
+bool
+vr_has_external_body(Datum value)
+{
+	VrToastLocator loc;
+
+	return vr_get_body_locator(value, &loc);
+}
+
+/*
+ * vr_rewrite_action
+ *
+ * Keep / rehome / flatten disposition for placing a VR value into a relation
+ * whose effective TOAST home is home_toastoid.  Classification only; the action
+ * per verdict (relocate, flatten, refuse) belongs to the caller.  See the
+ * header for the precise meaning of each verdict and of home_toastoid.
+ *
+ * The body home is compared against the caller-supplied home_toastoid rather
+ * than read from a relation here, because the relocate site compares against
+ * the physical write target (reltoastrelid) while the final store gate compares
+ * against the effective post-rewrite home (rd_toastoid, else reltoastrelid);
+ * those are different OIDs by necessity during a heap rewrite.
+ */
+VrRewriteAction
+vr_rewrite_action(Datum value, Oid home_toastoid)
+{
+	VrToastLocator loc;
+
+	/* No out-of-line body (inline self-contained VR, or a non-VR datum). */
+	if (!vr_get_body_locator(value, &loc))
+		return VR_RW_KEEP;
+
+	/*
+	 * Substrate-backed.  Already homed here: not relocatable into a different
+	 * home (a copy must materialise it independently, a store gate accepts it).
+	 * Otherwise the body lives elsewhere and must be rehomed, or refused.
+	 */
+	if (loc.storage_oid == home_toastoid)
+		return VR_RW_FLATTEN;
+
+	return VR_RW_REHOME;
 }
 
 /*

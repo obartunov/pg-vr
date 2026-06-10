@@ -182,25 +182,21 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		for (int i = 0; i < numAttrs; i++)
 		{
 			varlena    *val;
-			varatt_vr	v;
 
 			if (toast_isnull[i] || TupleDescAttr(tupleDesc, i)->attlen != -1)
 				continue;
 			val = (varlena *) DatumGetPointer(toast_values[i]);
 			if (!VARATT_IS_EXTERNAL_VR(val))
 				continue;
-			VARATT_EXTERNAL_GET_POINTER(v, val);
 
 			/*
-			 * A self-contained inline VR (VR_FLAG_INLINE) carries its payload in
-			 * the descriptor and has no substrate locator or home OID, so there
-			 * is nothing to dangle: skip the home-OID safety net for it.  The
-			 * net still applies to every substrate-backed VR unchanged.
+			 * Refuse only a VR whose body must still be rehomed (it lives in a
+			 * different TOAST than the effective home): persisting that locator
+			 * would dangle once the source storage is dropped.  An inline
+			 * self-contained VR (VR_RW_KEEP) and a VR already homed here
+			 * (VR_RW_FLATTEN) carry no such risk and are left untouched.
 			 */
-			if (v.vr_flags & VR_FLAG_INLINE)
-				continue;
-
-			if (v.vr_storage_oid != home_toastoid)
+			if (vr_rewrite_action(toast_values[i], home_toastoid) == VR_RW_REHOME)
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						 errmsg("cannot store a value representation referencing a different relation's TOAST storage")));

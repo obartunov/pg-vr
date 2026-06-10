@@ -84,7 +84,44 @@ typedef struct VrToastLocator
 	Oid			valueid;
 } VrToastLocator;
 
-extern bool vr_toast_get_locator(Datum stored_value, VrToastLocator *out);
+extern bool vr_get_body_locator(Datum stored_value, VrToastLocator *out);
+
+/*
+ * Representation-policy API (VR-owned).  Backend touch points ask these instead
+ * of inspecting VR_FLAG_INLINE / storage_oid locally; locator existence is the
+ * single source of truth for "owns an out-of-line body".
+ *
+ * vr_has_external_body() is defined through vr_get_body_locator().
+ */
+extern bool vr_has_external_body(Datum value);
+
+/*
+ * Disposition of a persistent VR value that a heap store/rewrite must place
+ * into a relation whose effective TOAST home is home_toastoid:
+ *
+ *   VR_RW_KEEP    - nothing out of line to place: an inline self-contained VR
+ *                   (body in the descriptor) or a non-VR datum.  Keep verbatim.
+ *   VR_RW_REHOME  - the body lives in a different TOAST relation.  A rewrite/
+ *                   copy must copy it into home_toastoid; a store gate refuses.
+ *   VR_RW_FLATTEN - the body is already homed in home_toastoid.  It is not
+ *                   relocatable into a different home: a copy must materialise
+ *                   it independently rather than share it, while a store gate
+ *                   accepts it as correctly homed.
+ *
+ * home_toastoid is the caller's relation fact: the physical write target
+ * (reltoastrelid) at the relocate site, or the effective post-rewrite home
+ * (rd_toastoid, else reltoastrelid) at the final store gate.  The keep/rehome/
+ * flatten classification is owned here; the action taken per verdict is the
+ * caller's (relocate, flatten, refuse).
+ */
+typedef enum VrRewriteAction
+{
+	VR_RW_KEEP,
+	VR_RW_REHOME,
+	VR_RW_FLATTEN,
+} VrRewriteAction;
+
+extern VrRewriteAction vr_rewrite_action(Datum value, Oid home_toastoid);
 
 /*
  * True iff a and b are persistent VR datums denoting the same substrate body

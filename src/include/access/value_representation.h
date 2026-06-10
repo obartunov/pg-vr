@@ -76,6 +76,14 @@ typedef struct VrHeaderInfo
 extern bool vr_header_info(Datum stored_value, VrHeaderInfo *out);
 
 /*
+ * Generic read-validity policy: true iff the generic VR layer understands every
+ * persistent flag bit set in the header (compression bits and VR_FLAG_INLINE).
+ * The per-kind dispatch (vr_lookup_methods) is a separate, already-centralized
+ * step.  Backend read paths ask this instead of testing the flag mask locally.
+ */
+extern bool vr_read_supported(const VrHeaderInfo *hdr);
+
+/*
  * Transient in-memory VR body form.
  *
  * Logical decoding may construct a runtime-only VR datum whose body is an

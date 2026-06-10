@@ -79,15 +79,17 @@ toast_tuple_init(ToastTupleContext *ttc)
 				 VARATT_IS_EXTERNAL_VR(old_value)))
 			{
 				bool		delete_old;
-				bool		old_is_inline_vr = false;
+				bool		old_is_inline_vr;
 
-				if (VARATT_IS_EXTERNAL_VR(old_value))
-				{
-					varatt_vr	old_vr;
-
-					VARATT_EXTERNAL_GET_POINTER(old_vr, old_value);
-					old_is_inline_vr = (old_vr.vr_flags & VR_FLAG_INLINE) != 0;
-				}
+				/*
+				 * A VR with no out-of-line body (an inline self-contained VR)
+				 * has nothing to reclaim.  Ask the VR-owned predicate instead
+				 * of inspecting VR_FLAG_INLINE here.  vr_has_external_body() is
+				 * also false for the ONDISK case, so the EXTERNAL_VR guard keeps
+				 * an ordinary on-disk value out of the inline branch.
+				 */
+				old_is_inline_vr = VARATT_IS_EXTERNAL_VR(old_value) &&
+					!vr_has_external_body(PointerGetDatum(old_value));
 
 				if (old_is_inline_vr)
 				{
@@ -211,28 +213,41 @@ toast_tuple_init(ToastTupleContext *ttc)
 			if (att->attstorage != TYPSTORAGE_PLAIN &&
 				VARATT_IS_EXTERNAL_VR(new_value))
 			{
-				varatt_vr	vrv;
-
-				VARATT_EXTERNAL_GET_POINTER(vrv, new_value);
+				VrRewriteAction act;
 
 				/*
-				 * A self-contained inline VR (VR_FLAG_INLINE) has no external
-				 * body and no home OID: it is ordinary tuple content with no
-				 * dangling risk.  Keep it verbatim on INSERT and UPDATE alike -
-				 * neither relocate it nor let the foreign-external fallback below
-				 * flatten it (clear need_detoast) - so INSERT, UPDATE and heap
-				 * rewrite (VACUUM FULL / CLUSTER / REPACK) all preserve both the
-				 * value and the inline representation.  Only a substrate-backed
-				 * VR value is relocatable, and only on INSERT/rewrite
-				 * (ttc_oldvalues == NULL); that else branch (TOAST-backed
-				 * relocation) is byte-for-byte unchanged.
+				 * Ask the VR-owned policy how to place this value into THIS
+				 * relation's physical TOAST; reltoastrelid is the write target.
+				 *
+				 *   VR_RW_KEEP    - inline self-contained VR: keep verbatim on
+				 *                   INSERT, UPDATE and heap rewrite alike,
+				 *                   preserving the value and the inline form.
+				 *   VR_RW_REHOME  - body lives in a different TOAST: on INSERT /
+				 *                   rewrite / cross-relation copy (ttc_oldvalues
+				 *                   == NULL) copy it into this relation and
+				 *                   rewrite the locator (toast_save_datum stamps
+				 *                   it with rd_toastoid during a rewrite, so the
+				 *                   result is homed here); on UPDATE leave it to
+				 *                   the generic flatten path below.
+				 *   VR_RW_FLATTEN - body already homed here: leave it to the
+				 *                   generic flatten path so the value is
+				 *                   materialised independently (cross-row body
+				 *                   sharing is unsupported - the substrate has no
+				 *                   refcount, so a shared body would dangle when
+				 *                   one referencing row is deleted).
+				 *
+				 * Only VR_RW_KEEP and a completed rehome clear need_detoast;
+				 * every other case keeps need_detoast and is handled by the
+				 * external-value path below, byte-for-byte as before.
 				 */
-				if (vrv.vr_flags & VR_FLAG_INLINE)
+				act = vr_rewrite_action(ttc->ttc_values[i],
+										ttc->ttc_rel->rd_rel->reltoastrelid);
+
+				if (act == VR_RW_KEEP)
 				{
 					need_detoast = false;
 				}
-				else if (ttc->ttc_oldvalues == NULL &&
-						 vrv.vr_storage_oid != ttc->ttc_rel->rd_rel->reltoastrelid)
+				else if (act == VR_RW_REHOME && ttc->ttc_oldvalues == NULL)
 				{
 					VrRewriteContext rc;
 					varlena    *new_vr;

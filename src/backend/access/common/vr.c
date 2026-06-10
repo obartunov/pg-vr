@@ -415,3 +415,19 @@ vr_header_info(Datum stored_value, VrHeaderInfo *out)
 
 	return false;
 }
+
+/*
+ * vr_read_supported
+ *
+ * Generic read-validity policy: true iff every persistent flag bit in the
+ * header is one the generic VR layer understands (the compression bits and
+ * VR_FLAG_INLINE, i.e. VR_FLAG_GENERIC_KNOWN_MASK).  The per-kind dispatch
+ * (vr_lookup_methods) is a separate step the caller still performs.  This is
+ * the single source of truth for the flag-validity gate; backend read paths
+ * call it instead of testing the mask locally.
+ */
+bool
+vr_read_supported(const VrHeaderInfo *hdr)
+{
+	return (hdr->flags & ~VR_FLAG_GENERIC_KNOWN_MASK) == 0;
+}
