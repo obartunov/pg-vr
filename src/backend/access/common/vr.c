@@ -22,6 +22,7 @@
 #include "access/detoast.h"		/* VARATT_EXTERNAL_GET_POINTER */
 #include "access/value_representation.h"
 #include "fmgr.h"				/* pg_detoast_datum */
+#include "utils/rel.h"			/* RelationIsLogicallyLogged */
 
 /*
  * Static methods table, indexed by VrKind.
@@ -93,11 +94,222 @@ static const ValueRepresentationMethods vr_jsonb_cold_methods = {
 	.make = vr_jsonb_cold_make,
 };
 
+/*
+ * VR_KIND_TEST_VECTORS - the substrate-free simple kind.
+ *
+ * Proves the VR layer independent of TOAST-backed body storage: a small logical
+ * value is carried INLINE inside a self-contained persistent VR descriptor
+ * (VR_FLAG_INLINE).  There is no external/TOAST body, no home OID, no body
+ * ownership, and therefore no orphan/dangling surface.  make() builds the
+ * inline descriptor (declining values that do not fit), flatten() reads the
+ * inline payload back through the ordinary vr_body_read() seam, and the
+ * lifecycle methods are descriptor-local (no substrate work).
+ */
+
+/*
+ * The inline region (vr_storage_oid, vr_valueid) must be contiguous and exactly
+ * VR_INLINE_CAPACITY bytes, so it can hold a packed inline payload.
+ */
+StaticAssertDecl(offsetof(varatt_vr, vr_valueid) ==
+				 offsetof(varatt_vr, vr_storage_oid) + sizeof(Oid),
+				 "varatt_vr inline region must be contiguous");
+StaticAssertDecl(VR_INLINE_CAPACITY == 2 * sizeof(Oid),
+				 "VR_INLINE_CAPACITY must match the inline region size");
+
+Datum
+vr_make_inline(Relation rel, VrKind kind, uint8 version,
+			   const void *payload, Size payload_len, MemoryContext mcxt)
+{
+	struct varlena *result;
+	varatt_vr  *vr;
+	MemoryContext old;
+
+	/*
+	 * Same construction boundary as vr_make_save_body: a persistent VR datum
+	 * (inline or substrate-backed) cannot be represented by logical decoding,
+	 * which refuses any external VR, so it would wedge a logical slot.  This is
+	 * a VR representation boundary, not a TOAST rule.
+	 */
+	if (RelationIsLogicallyLogged(rel))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("persistent value representation is not supported on logically logged relations")));
+
+	if (payload_len > VR_INLINE_CAPACITY)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("value representation inline payload too large: %zu bytes (max %zu)",
+						payload_len, (Size) VR_INLINE_CAPACITY)));
+
+	old = MemoryContextSwitchTo(mcxt);
+	result = (struct varlena *) palloc0(VARHDRSZ_EXTERNAL + sizeof(varatt_vr));
+	SET_VARTAG_EXTERNAL(result, VARTAG_VR);
+	vr = (varatt_vr *) VARDATA_EXTERNAL(result);
+	vr->vr_kind = (uint8) kind;
+	vr->vr_version = version;
+	vr->vr_flags = VR_FLAG_INLINE;	/* self-contained; compression bits 0 */
+	vr->vr_logical_size = (int32) (VARHDRSZ + payload_len);
+	vr->vr_body_size = (int32) payload_len;
+
+	/*
+	 * The inline payload occupies the (vr_storage_oid, vr_valueid) region, which
+	 * palloc0 already zeroed.  VR_FLAG_INLINE marks these bytes as payload, never
+	 * a TOAST locator.
+	 */
+	if (payload_len > 0)
+		memcpy(&vr->vr_storage_oid, payload, payload_len);
+	MemoryContextSwitchTo(old);
+
+	return PointerGetDatum(result);
+}
+
+/* --- VR_KIND_TEST_VECTORS lifecycle methods --- */
+
+static Datum
+vr_test_vectors_make(Relation rel, AttrNumber attnum,
+					 Datum logical_value, const VrMakeContext *ctx)
+{
+	struct varlena *raw = (struct varlena *) DatumGetPointer(logical_value);
+	struct varlena *flat = pg_detoast_datum(raw);
+	Size		len = VARSIZE_ANY_EXHDR(flat);
+	Datum		result;
+
+	/*
+	 * Decline values that do not fit the inline descriptor; the externalizer
+	 * then falls back to the ordinary representation.
+	 */
+	if (len > VR_INLINE_CAPACITY)
+	{
+		if (flat != raw)
+			pfree(flat);
+		return logical_value;
+	}
+
+	result = vr_make_inline(rel, VR_KIND_TEST_VECTORS, 1,
+							VARDATA_ANY(flat), len, ctx->mcxt);
+	if (flat != raw)
+		pfree(flat);
+	return result;
+}
+
+static Datum
+vr_test_vectors_flatten(Datum stored_value, MemoryContext cxt)
+{
+	Size		body_size = vr_body_size(stored_value); /* logical bytes */
+	MemoryContext old = MemoryContextSwitchTo(cxt);
+	struct varlena *result = (struct varlena *) palloc(VARHDRSZ + body_size);
+
+	SET_VARSIZE(result, VARHDRSZ + body_size);
+	MemoryContextSwitchTo(old);
+
+	if (body_size > 0)
+		vr_body_read(stored_value, 0, body_size, VARDATA(result));
+
+	return PointerGetDatum(result);
+}
+
+static Datum
+vr_test_vectors_replace(Relation rel, AttrNumber attnum,
+						Datum old_stored_value, Datum new_logical_value,
+						const VrReplaceContext *ctx)
+{
+	struct varlena *raw = (struct varlena *) DatumGetPointer(new_logical_value);
+	struct varlena *flat = pg_detoast_datum(raw);
+	Size		len = VARSIZE_ANY_EXHDR(flat);
+	Datum		result;
+
+	/* Self-contained: rebuild from the new logical value; do not reuse old. */
+	if (len > VR_INLINE_CAPACITY)
+	{
+		if (flat != raw)
+			pfree(flat);
+		return new_logical_value;
+	}
+	result = vr_make_inline(rel, VR_KIND_TEST_VECTORS, 1,
+							VARDATA_ANY(flat), len, ctx->mcxt);
+	if (flat != raw)
+		pfree(flat);
+	return result;
+}
+
+static Datum
+vr_test_vectors_rewrite(Datum old_stored_value, const VrRewriteContext *ctx)
+{
+	/*
+	 * An inline VR is self-contained tuple content with no external body and no
+	 * home OID, so a heap rewrite needs no relocation: the relocation trigger
+	 * (toast_helper.c) skips VR_FLAG_INLINE and copies the datum verbatim, so
+	 * this method is not on the heap-rewrite hot path.  If ever invoked, return
+	 * the value unchanged, which is correct for a self-contained datum.
+	 */
+	return old_stored_value;
+}
+
+static void
+vr_test_vectors_cleanup(Datum stored_value, VrCleanupReason reason,
+						const VrCleanupContext *ctx)
+{
+	/*
+	 * No-op: an inline VR owns no external body, no TOAST chunks, and no home
+	 * storage, so there is nothing to release on delete or abort.  It is freed
+	 * with its owning tuple/memory context like any inline content.
+	 */
+}
+
+static bool
+vr_test_vectors_validate(Relation rel, AttrNumber attnum,
+						 Datum stored_value, const VrValidateContext *ctx)
+{
+	struct varlena *attr = (struct varlena *) DatumGetPointer(stored_value);
+	varatt_vr	v;
+	bool		ok = true;
+
+#define VR_TV_REPORT(msg) \
+	do { if (ctx->report) ctx->report(ctx->report_arg, (msg)); ok = false; } while (0)
+
+	if (!VARATT_IS_EXTERNAL_VR(attr))
+	{
+		if (ctx->report)
+			ctx->report(ctx->report_arg, "not a persistent VR datum");
+		return false;
+	}
+	VARATT_EXTERNAL_GET_POINTER(v, attr);
+
+	if (v.vr_kind != (uint8) VR_KIND_TEST_VECTORS)
+		VR_TV_REPORT("wrong VR kind");
+	if (v.vr_version != 1)
+		VR_TV_REPORT("unsupported VR version");
+	if ((v.vr_flags & VR_FLAG_INLINE) == 0)
+		VR_TV_REPORT("missing VR_FLAG_INLINE");
+	if ((v.vr_flags & VR_FLAG_COMPRESSION_MASK) != 0)
+		VR_TV_REPORT("inline VR must be uncompressed");
+	if ((v.vr_flags & ~VR_FLAG_GENERIC_KNOWN_MASK) != 0)
+		VR_TV_REPORT("unknown VR flags");
+	if (v.vr_body_size < 0 || (Size) v.vr_body_size > VR_INLINE_CAPACITY)
+		VR_TV_REPORT("inline body size out of range");
+	if (v.vr_logical_size != (int32) (VARHDRSZ + v.vr_body_size))
+		VR_TV_REPORT("logical size inconsistent with inline body");
+
+#undef VR_TV_REPORT
+	return ok;
+}
+
+static const ValueRepresentationMethods vr_test_vectors_methods = {
+	.kind = VR_KIND_TEST_VECTORS,
+	.write_version = 1,
+	.flatten = vr_test_vectors_flatten,
+	.make = vr_test_vectors_make,
+	.replace = vr_test_vectors_replace,
+	.rewrite = vr_test_vectors_rewrite,
+	.cleanup = vr_test_vectors_cleanup,
+	.validate = vr_test_vectors_validate,
+};
+
 static const ValueRepresentationMethods *const vr_methods_table[VR_KIND__COUNT] =
 {
 	[VR_KIND_INVALID] = NULL,
 	[VR_KIND_JSONB_COLD] = &vr_jsonb_cold_methods,
-	[VR_KIND_TEST_VECTORS] = NULL,
+	[VR_KIND_TEST_VECTORS] = &vr_test_vectors_methods,
 	[VR_KIND_BYTEA_BLOCK] = NULL,
 };
 

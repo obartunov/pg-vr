@@ -190,6 +190,16 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 			if (!VARATT_IS_EXTERNAL_VR(val))
 				continue;
 			VARATT_EXTERNAL_GET_POINTER(v, val);
+
+			/*
+			 * A self-contained inline VR (VR_FLAG_INLINE) carries its payload in
+			 * the descriptor and has no substrate locator or home OID, so there
+			 * is nothing to dangle: skip the home-OID safety net for it.  The
+			 * net still applies to every substrate-backed VR unchanged.
+			 */
+			if (v.vr_flags & VR_FLAG_INLINE)
+				continue;
+
 			if (v.vr_storage_oid != home_toastoid)
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),

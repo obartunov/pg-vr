@@ -79,42 +79,75 @@ toast_tuple_init(ToastTupleContext *ttc)
 				 VARATT_IS_EXTERNAL_VR(old_value)))
 			{
 				bool		delete_old;
+				bool		old_is_inline_vr = false;
 
-				if (VARATT_IS_EXTERNAL_ONDISK(old_value))
-					delete_old = ttc->ttc_isnull[i] ||
-						!VARATT_IS_EXTERNAL_ONDISK(new_value) ||
-						memcmp(old_value, new_value,
-							   VARSIZE_EXTERNAL(old_value)) != 0;
-				else
-					/*
-					 * Persistent VR: the old body is still needed only if the
-					 * new value is a persistent VR denoting the SAME substrate
-					 * body (same storage_oid + valueid).  Otherwise the old
-					 * body is no longer referenced and must be reclaimed.
-					 */
-					delete_old = ttc->ttc_isnull[i] ||
-						!VARATT_IS_EXTERNAL_VR(new_value) ||
-						!vr_toast_same_body(ttc->ttc_oldvalues[i],
-											ttc->ttc_values[i]);
+				if (VARATT_IS_EXTERNAL_VR(old_value))
+				{
+					varatt_vr	old_vr;
 
-				if (delete_old)
+					VARATT_EXTERNAL_GET_POINTER(old_vr, old_value);
+					old_is_inline_vr = (old_vr.vr_flags & VR_FLAG_INLINE) != 0;
+				}
+
+				if (old_is_inline_vr)
 				{
 					/*
-					 * The old external stored value isn't needed any more
-					 * after the update
+					 * A self-contained inline VR has no out-of-line body to
+					 * reclaim, so it is never marked for deletion.  Reuse the old
+					 * reference only if the new value is the byte-identical
+					 * inline descriptor (column effectively unchanged); otherwise
+					 * fall through to process the new value, which - if itself an
+					 * inline VR - is kept verbatim by the new-value path below.
 					 */
-					ttc->ttc_attr[i].tai_colflags |= TOASTCOL_NEEDS_DELETE_OLD;
-					ttc->ttc_flags |= TOAST_NEEDS_DELETE_OLD;
+					if (!ttc->ttc_isnull[i] &&
+						VARATT_IS_EXTERNAL_VR(new_value) &&
+						VARSIZE_EXTERNAL(old_value) == VARSIZE_EXTERNAL(new_value) &&
+						memcmp(old_value, new_value,
+							   VARSIZE_EXTERNAL(old_value)) == 0)
+					{
+						ttc->ttc_attr[i].tai_colflags |= TOASTCOL_IGNORE;
+						continue;
+					}
+					/* changed: no old body to delete; process the new value */
 				}
 				else
 				{
-					/*
-					 * This attribute isn't changed by this update so we reuse
-					 * the original reference to the old value in the new
-					 * tuple.
-					 */
-					ttc->ttc_attr[i].tai_colflags |= TOASTCOL_IGNORE;
-					continue;
+					if (VARATT_IS_EXTERNAL_ONDISK(old_value))
+						delete_old = ttc->ttc_isnull[i] ||
+							!VARATT_IS_EXTERNAL_ONDISK(new_value) ||
+							memcmp(old_value, new_value,
+								   VARSIZE_EXTERNAL(old_value)) != 0;
+					else
+						/*
+						 * Persistent VR: the old body is still needed only if the
+						 * new value is a persistent VR denoting the SAME substrate
+						 * body (same storage_oid + valueid).  Otherwise the old
+						 * body is no longer referenced and must be reclaimed.
+						 */
+						delete_old = ttc->ttc_isnull[i] ||
+							!VARATT_IS_EXTERNAL_VR(new_value) ||
+							!vr_toast_same_body(ttc->ttc_oldvalues[i],
+												ttc->ttc_values[i]);
+
+					if (delete_old)
+					{
+						/*
+						 * The old external stored value isn't needed any more
+						 * after the update
+						 */
+						ttc->ttc_attr[i].tai_colflags |= TOASTCOL_NEEDS_DELETE_OLD;
+						ttc->ttc_flags |= TOAST_NEEDS_DELETE_OLD;
+					}
+					else
+					{
+						/*
+						 * This attribute isn't changed by this update so we reuse
+						 * the original reference to the old value in the new
+						 * tuple.
+						 */
+						ttc->ttc_attr[i].tai_colflags |= TOASTCOL_IGNORE;
+						continue;
+					}
 				}
 			}
 		}
@@ -176,13 +209,30 @@ toast_tuple_init(ToastTupleContext *ttc)
 			 * (postgrespro/postgres jsonb_toaster branch).
 			 */
 			if (att->attstorage != TYPSTORAGE_PLAIN &&
-				ttc->ttc_oldvalues == NULL &&
 				VARATT_IS_EXTERNAL_VR(new_value))
 			{
 				varatt_vr	vrv;
 
 				VARATT_EXTERNAL_GET_POINTER(vrv, new_value);
-				if (vrv.vr_storage_oid != ttc->ttc_rel->rd_rel->reltoastrelid)
+
+				/*
+				 * A self-contained inline VR (VR_FLAG_INLINE) has no external
+				 * body and no home OID: it is ordinary tuple content with no
+				 * dangling risk.  Keep it verbatim on INSERT and UPDATE alike -
+				 * neither relocate it nor let the foreign-external fallback below
+				 * flatten it (clear need_detoast) - so INSERT, UPDATE and heap
+				 * rewrite (VACUUM FULL / CLUSTER / REPACK) all preserve both the
+				 * value and the inline representation.  Only a substrate-backed
+				 * VR value is relocatable, and only on INSERT/rewrite
+				 * (ttc_oldvalues == NULL); that else branch (TOAST-backed
+				 * relocation) is byte-for-byte unchanged.
+				 */
+				if (vrv.vr_flags & VR_FLAG_INLINE)
+				{
+					need_detoast = false;
+				}
+				else if (ttc->ttc_oldvalues == NULL &&
+						 vrv.vr_storage_oid != ttc->ttc_rel->rd_rel->reltoastrelid)
 				{
 					VrRewriteContext rc;
 					varlena    *new_vr;

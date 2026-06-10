@@ -279,6 +279,21 @@ extern Datum vr_make_save_body(Relation rel, AttrNumber attnum,
 							   const void *body, Size body_size);
 
 /*
+ * vr_make_inline
+ *
+ * Substrate-free construction: build a self-contained persistent VR descriptor
+ * whose body bytes are carried INLINE in the descriptor (VR_FLAG_INLINE), with
+ * no TOAST body, no substrate locator, and no body ownership.  payload_len must
+ * be <= VR_INLINE_CAPACITY.  Applies the same construction boundary as
+ * vr_make_save_body (refuses on a logically logged relation), because an inline
+ * value is still a persistent VR datum that logical decoding cannot represent.
+ * The matching read side is vr_body_size() / vr_body_read().
+ */
+extern Datum vr_make_inline(Relation rel, VrKind kind, uint8 version,
+							const void *payload, Size payload_len,
+							MemoryContext mcxt);
+
+/*
  * VR kind selector hook.
  *
  * Consulted by the TOAST externalization path when a flat logical value is

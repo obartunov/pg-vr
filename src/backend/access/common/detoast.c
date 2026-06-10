@@ -57,8 +57,13 @@ vr_detoast_flatten(varlena *attr)
 	if (!vr_header_info(PointerGetDatum(attr), &hdr))
 		elog(ERROR, "vr_detoast_flatten called on a non-VR datum");
 
-	/* v1 readers ERROR on unknown persistent flag bits */
-	if ((hdr.flags & ~VR_FLAG_KNOWN_MASK) != 0)
+	/*
+	 * Generic read validity: the generic VR layer understands the compression
+	 * bits and VR_FLAG_INLINE.  (The narrower VR_FLAG_KNOWN_MASK is the
+	 * TOAST-source mask used by vr_build_source_external, which deliberately
+	 * rejects inline.)  ERROR on any other persistent flag bit.
+	 */
+	if ((hdr.flags & ~VR_FLAG_GENERIC_KNOWN_MASK) != 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("unsupported VR flags 0x%x", (unsigned int) hdr.flags)));

@@ -83,6 +83,16 @@ vr_toast_get_locator(Datum stored_value, VrToastLocator *out)
 
 	/* Must copy to access aligned fields */
 	VARATT_EXTERNAL_GET_POINTER(v, attr);
+
+	/*
+	 * A self-contained inline VR carries its payload in the (vr_storage_oid,
+	 * vr_valueid) region; those bytes are NOT a TOAST locator.  Report "no
+	 * locator" so locator-based handling (including vr_toast_same_body) never
+	 * treats inline payload bytes as a substrate locator.
+	 */
+	if (v.vr_flags & VR_FLAG_INLINE)
+		return false;
+
 	out->storage_oid = v.vr_storage_oid;
 	out->valueid = v.vr_valueid;
 	return true;
@@ -579,6 +589,26 @@ vr_body_read(Datum stored_value, Size offset, Size len, void *buf)
 
 	if (VARATT_IS_EXTERNAL_VR(attr))
 	{
+		varatt_vr	v;
+
+		VARATT_EXTERNAL_GET_POINTER(v, attr);
+		if (v.vr_flags & VR_FLAG_INLINE)
+		{
+			/*
+			 * Self-contained inline body: read from the descriptor, never the
+			 * TOAST substrate.  Validate deterministically before any access so
+			 * a malformed descriptor cannot read out of the inline region.
+			 */
+			if ((v.vr_flags & VR_FLAG_COMPRESSION_MASK) != 0 ||
+				v.vr_body_size < 0 ||
+				(Size) v.vr_body_size > VR_INLINE_CAPACITY ||
+				offset > (Size) v.vr_body_size ||
+				len > (Size) v.vr_body_size - offset)
+				elog(ERROR, "vr_body_read: malformed inline value representation descriptor");
+			if (len > 0)
+				memcpy(buf, ((const char *) &v.vr_storage_oid) + offset, len);
+			return;
+		}
 		vr_toast_body_read(stored_value, offset, len, buf);
 		return;
 	}

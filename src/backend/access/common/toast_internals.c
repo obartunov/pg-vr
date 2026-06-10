@@ -487,24 +487,35 @@ toast_delete_datum(Relation rel, Datum value, bool is_speculative)
 	}
 	else if (VARATT_IS_EXTERNAL_VR(attr))
 	{
+		varatt_vr	v;
 		VrToastLocator loc;
 
 		/*
-		 * A persistent Value Representation (VR) value owns an out-of-line body
-		 * in the substrate.  Reclaim it via its locator: VR is external but not
-		 * ONDISK, so the ordinary branch above does not see it, and without
-		 * this the body would be orphaned.
-		 *
-		 * is_speculative is propagated: a VR body written during a speculative
-		 * insertion that is being aborted must be super-deleted with
-		 * heap_abort_speculative, exactly like the TOAST chunks of an ordinary
-		 * speculatively-inserted value.  The body lives in an ordinary TOAST
-		 * relation, so that path applies to its chunks.
+		 * A self-contained inline VR (VR_FLAG_INLINE) carries its payload in the
+		 * descriptor and owns no out-of-line body, so there is nothing to
+		 * reclaim here: the descriptor is freed with the tuple.  Only a
+		 * substrate-backed VR has a body to delete via its locator.
 		 */
-		if (!vr_toast_get_locator(value, &loc))
-			elog(ERROR, "could not obtain VR locator for deletion");
+		VARATT_EXTERNAL_GET_POINTER(v, attr);
+		if (!(v.vr_flags & VR_FLAG_INLINE))
+		{
+			/*
+			 * A persistent Value Representation (VR) value owns an out-of-line
+			 * body in the substrate.  Reclaim it via its locator: VR is external
+			 * but not ONDISK, so the ordinary branch above does not see it, and
+			 * without this the body would be orphaned.
+			 *
+			 * is_speculative is propagated: a VR body written during a
+			 * speculative insertion that is being aborted must be super-deleted
+			 * with heap_abort_speculative, exactly like the TOAST chunks of an
+			 * ordinary speculatively-inserted value.  The body lives in an
+			 * ordinary TOAST relation, so that path applies to its chunks.
+			 */
+			if (!vr_toast_get_locator(value, &loc))
+				elog(ERROR, "could not obtain VR locator for deletion");
 
-		vr_toast_body_delete(loc.storage_oid, loc.valueid, is_speculative);
+			vr_toast_body_delete(loc.storage_oid, loc.valueid, is_speculative);
+		}
 	}
 
 	/*

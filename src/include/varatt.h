@@ -112,7 +112,37 @@ typedef struct varatt_vr_inmem
 #define VR_COMPRESSION_PGLZ			0x0001	/* body stored pglz-compressed */
 #define VR_COMPRESSION_LZ4			0x0002	/* body stored lz4-compressed */
 /* 0x0003 is reserved and read as an unknown method (reader ERRORs) */
+
+/*
+ * VR_FLAG_INLINE marks a self-contained descriptor whose body bytes are carried
+ * INLINE in the (vr_storage_oid, vr_valueid) region, not via a substrate
+ * locator.  Such a value has no external/TOAST body, no home OID, and no body
+ * ownership: it travels with the heap tuple as ordinary content.  When this bit
+ * is set, vr_storage_oid/vr_valueid must NOT be interpreted as a TOAST locator,
+ * and the compression bits are 0 (inline payload is stored verbatim).
+ */
+#define VR_FLAG_INLINE				0x0004
+
+/*
+ * Two masks, deliberately distinct:
+ *  - VR_FLAG_KNOWN_MASK is the TOAST-source mask: the TOAST-backed read/build
+ *    path understands only the compression bits and ERRORs on anything else,
+ *    so an inline descriptor reaching that path fails deterministically before
+ *    its payload bytes could be misread as vr_storage_oid/vr_valueid.
+ *  - VR_FLAG_GENERIC_KNOWN_MASK is what the generic VR layer understands; it
+ *    includes VR_FLAG_INLINE so a valid inline descriptor is never rejected by
+ *    generic validation.
+ */
 #define VR_FLAG_KNOWN_MASK			VR_FLAG_COMPRESSION_MASK
+#define VR_FLAG_GENERIC_KNOWN_MASK	(VR_FLAG_COMPRESSION_MASK | VR_FLAG_INLINE)
+
+/*
+ * Bytes available for an inline body inside the descriptor: the two Oid-sized
+ * substrate-locator words, reused as the inline payload region when
+ * VR_FLAG_INLINE is set.  No on-disk format change: VARTAG_SIZE(VARTAG_VR)
+ * stays sizeof(varatt_vr).
+ */
+#define VR_INLINE_CAPACITY			(2 * sizeof(Oid))
 
 /*
  * These macros define the "saved size" portion of va_extinfo.  Its remaining
