@@ -57,6 +57,7 @@ SUBDIRS = \
 		  vr_core_smoke \
 		  vr_jsonb_cold_smoke \
 		  vr_persist_smoke \
+		  vr_test_vectors_smoke \
 		  unsafe_tests \
 		  worker_spi \
 		  xid_wraparound

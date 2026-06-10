@@ -1,0 +1,5 @@
+# vr_test_vectors_smoke extension
+comment = 'substrate-free simple VR kind (test vectors) smoke'
+default_version = '1.0'
+module_pathname = '$libdir/vr_test_vectors_smoke'
+relocatable = true
