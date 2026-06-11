@@ -5163,16 +5163,34 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		 * A value representation (VR) datum is external but is not a
 		 * varatt_external TOAST pointer; reading it as one below
 		 * (VARATT_EXTERNAL_GET_POINTER) would misinterpret its larger header as
-		 * a TOAST pointer and derive a bogus value id and raw size.  Nothing
-		 * constructs a persistent VR datum yet, so this is unreachable; guard
-		 * the boundary explicitly rather than misread.  Decode-local
-		 * reconstruction of a VR body (into a transient VARTAG_VR_INMEM, then
-		 * flatten) is deferred until construction and a first kind exist.
+		 * a TOAST pointer and derive a bogus value id and raw size.
+		 *
+		 * A VR datum can legitimately appear here when the transaction wrote
+		 * TOAST chunks for some OTHER column while the (unchanged, live) VR
+		 * value rode along in the new tuple - e.g. an UPDATE of an ordinary
+		 * toastable column on a table that also holds a VR column.  The VR
+		 * body itself wrote no chunks (construction is gated under logical
+		 * WAL), so there is nothing to reassemble for it.
+		 *
+		 * If the decoding context attests that its consumer captures VR
+		 * datums (consumer_captures_vr; today only the built-in REPACK
+		 * decoding worker, whose pgrepack plugin flattens VR through the
+		 * logical-value capture seam before spilling), let the datum pass
+		 * through the re-formed tuple untouched: it is copied byte-for-byte
+		 * (VARTAG_SIZE knows VARTAG_VR), so the in-place tuple rewrite below
+		 * keeps its size discipline.  Otherwise refuse: general logical
+		 * decoding has no consumer that may see a physical VR datum.
 		 */
 		if (VARATT_IS_VR(varlena_pointer))
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("logical decoding of a value representation is not supported")));
+		{
+			LogicalDecodingContext *ctx = rb->private_data;
+
+			if (ctx == NULL || !ctx->consumer_captures_vr)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("logical decoding of a value representation is not supported")));
+			continue;
+		}
 
 		VARATT_EXTERNAL_GET_POINTER(toast_pointer, varlena_pointer);
 

@@ -267,6 +267,18 @@ repack_setup_logical_decoding(Oid relid)
 	 */
 	Assert(!ctx->fast_forward);
 
+	/*
+	 * This decoding session's consumer (the pgrepack plugin) captures value
+	 * representation datums: repack_store_change flattens them through
+	 * vr_capture_logical_value before anything is spilled, so
+	 * ReorderBufferToastReplace may let a physical VR datum pass through the
+	 * re-formed tuple instead of refusing.  The live read behind that
+	 * flatten is safe only in this worker: bounded REPACK window, relation
+	 * held by REPACK, need_full_snapshot slot pinning the data horizon, and
+	 * the initial snapshot kept registered for toast access.
+	 */
+	ctx->consumer_captures_vr = true;
+
 	/* Avoid logical decoding of other relations. */
 	rel = table_open(relid, AccessShareLock);
 	repacked_rel_locator = rel->rd_locator;

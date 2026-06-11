@@ -50,6 +50,26 @@ typedef struct LogicalDecodingContext
 	 */
 	bool		fast_forward;
 
+	/*
+	 * Capability: the consumer of this decoding session captures value
+	 * representation (VR) datums itself.
+	 *
+	 * When set, ReorderBufferToastReplace lets a physical VR datum remain in
+	 * the re-formed tuple instead of refusing, so the session's output
+	 * plugin can flatten it through the logical-value capture seam
+	 * (vr_capture_logical_value).  A consumer that enables this capability
+	 * asserts that it owns the downstream tuple image and will
+	 * capture/flatten any VR datum before the value crosses a storage,
+	 * output, spill, or replication boundary; physical VR must not be
+	 * exposed outside that consumer-owned path.
+	 *
+	 * False by default (contexts are palloc0-created).  The only assignment
+	 * site is the built-in REPACK decoding worker, whose pgrepack plugin
+	 * captures VR in repack_store_change; general logical decoding
+	 * (walsender, pgoutput, SQL slot functions) must keep refusing.
+	 */
+	bool		consumer_captures_vr;
+
 	OutputPluginCallbacks callbacks;
 	OutputPluginOptions options;
 
