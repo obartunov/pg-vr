@@ -22,6 +22,7 @@
 #include "common/pg_lzcompress.h"
 #include "utils/expandeddatum.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 
 static varlena *toast_fetch_datum(varlena *attr);
 static varlena *toast_fetch_datum_slice(varlena *attr,
@@ -39,11 +40,15 @@ static varlena *toast_decompress_datum_slice(varlena *attr, int32 slicelength);
  *	methods, and flattens the value via the method into the current memory
  *	context, returning a non-extended flat varlena.
  *
- *	No VrKind has a methods-table entry yet, so vr_lookup_methods() returns
- *	NULL for every kind and every call currently resolves to a hard ERROR.
- *	That is the intended "fail loudly" recognition: it prevents a VR datum from
- *	being silently misread as an ordinary varlena until a kind (and the code
- *	that can first construct a persistent VR datum) exists.
+ *	Fail closed under logical decoding: flattening here would read the body
+ *	from LIVE storage for a point-in-WAL value, which is unsound in a
+ *	general decoding context (the slot pins only the catalog horizon, so
+ *	under lag the body may be gone or its toast value id reused) and its
+ *	outcome would otherwise depend on the consumer's snapshot state.  The
+ *	one decoding consumer that may obtain the logical value (the built-in
+ *	REPACK worker) does so through the consumer-owned capture seam
+ *	(vr_capture_logical_value), which never enters this function, so the
+ *	refusal below cannot affect it.
  * ----------
  */
 static varlena *
@@ -52,6 +57,12 @@ vr_detoast_flatten(varlena *attr)
 	VrHeaderInfo hdr;
 	const ValueRepresentationMethods *methods;
 	varlena    *result;
+
+	if (HistoricSnapshotActive())
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("logical decoding of a value representation is not supported"),
+				 errdetail("A value representation cannot be flattened from live storage inside a logical decoding context.")));
 
 	/* caller guarantees VARATT_IS_VR(attr) */
 	if (!vr_header_info(PointerGetDatum(attr), &hdr))
