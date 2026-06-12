@@ -812,24 +812,35 @@ logicalrep_write_tuple(StringInfo out, Relation rel, TupleTableSlot *slot,
 			continue;
 		}
 
-		if (att->attlen == -1 && VARATT_IS_EXTERNAL_ONDISK(DatumGetPointer(values[i])))
+		if (att->attlen == -1 &&
+			(VARATT_IS_EXTERNAL_ONDISK(DatumGetPointer(values[i])) ||
+			 VARATT_IS_EXTERNAL_VR(DatumGetPointer(values[i]))))
 		{
 			/*
 			 * Unchanged toasted datum.  (Note that we don't promise to detect
 			 * unchanged data in general; this is just a cheap check to avoid
 			 * sending large values unnecessarily.)
+			 *
+			 * An unchanged persistent value representation (class U: its body
+			 * wrote no chunks in the decoded transaction, so reorderbuffer's
+			 * reassembly did not touch it) is the same protocol situation: the
+			 * bytes are not in the stream and the subscriber already holds the
+			 * column's logical value, so send the unchanged-column marker.  No
+			 * physical VR descriptor crosses the wire.  (A class-S VR - body
+			 * chunks in the stream - was captured into an ordinary datum in
+			 * reorderbuffer before reaching this writer.)
 			 */
 			pq_sendbyte(out, LOGICALREP_COLUMN_UNCHANGED);
 			continue;
 		}
 
 		/*
-		 * A value representation (VR) datum cannot be serialized to the logical
-		 * replication stream: its out-of-line body lives in the source's
-		 * storage and is not reconstructable on the subscriber.  Reached when
-		 * the value carried no in-transaction toast chunks (so reorderbuffer's
-		 * reassembly did not run); guard the wire boundary explicitly.  Not
-		 * reached today (nothing constructs a VR).
+		 * Residual wire-boundary backstop: any VR form still present here is
+		 * not serializable.  Unchanged persistent VR was consumed by the
+		 * unchanged-column branch above; class-S VR was captured into an
+		 * ordinary datum in reorderbuffer.  Reaching this point means a
+		 * transient VARTAG_VR_INMEM or an upstream bug let a physical
+		 * descriptor approach the wire - hard ERROR, never emit bytes.
 		 */
 		if (att->attlen == -1 && VARATT_IS_VR(DatumGetPointer(values[i])))
 			ereport(ERROR,

@@ -455,6 +455,14 @@ pgoutput_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 	static bool publication_callback_registered = false;
 	MemoryContextCallback *mcallback;
 
+	/*
+	 * Our writer (logicalrep_write_tuple) represents an unchanged value
+	 * representation as LOGICALREP_COLUMN_UNCHANGED, the same protocol shape
+	 * as an unchanged ONDISK TOAST pointer, so reorderbuffer may leave a
+	 * class-U VR datum in the re-formed tuple for us.
+	 */
+	ctx->consumer_marks_unchanged_vr = true;
+
 	/* Create our memory context for private allocations. */
 	data->context = AllocSetContextCreate(ctx->context,
 										  "logical replication output context",

@@ -74,18 +74,18 @@ like(
 	qr/cannot be flattened from live storage/,
 	'same guard site on retry');
 
-# --- pgoutput consumer: N17 still refuses at the wire boundary,
-#     with its own message (the guard is never reached: pgoutput does not
-#     print datums through output functions).
+# --- pgoutput consumer: since M2, an unchanged (class-U) VR is the same
+#     protocol situation as unchanged TOAST - the writer emits
+#     LOGICALREP_COLUMN_UNCHANGED and the decode SUCCEEDS; no physical
+#     descriptor and no live read are involved (the E21 guard above proves
+#     the funnel still refuses for datum-printing consumers).
 ($ret, $out, $err) = $node->psql('postgres',
 	    "SELECT count(*) FROM pg_logical_slot_get_binary_changes("
 	  . "'s_po', NULL, NULL, 'proto_version', '1', 'publication_names', 'pub')"
 );
-isnt($ret, 0, 'pgoutput consumer fails on the same change');
-like(
-	$err,
-	qr/logical replication of a value representation is not supported/,
-	'N17 refusal unchanged, distinct message');
+is($ret, 0, 'pgoutput consumer succeeds on the class-U change (M2 marker)');
+unlike($err, qr/value representation/,
+	'no VR refusal on the pgoutput path');
 
 $node->safe_psql('postgres', "SELECT pg_drop_replication_slot('s_td')");
 $node->safe_psql('postgres', "SELECT pg_drop_replication_slot('s_po')");

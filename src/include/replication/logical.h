@@ -70,6 +70,23 @@ typedef struct LogicalDecodingContext
 	 */
 	bool		consumer_captures_vr;
 
+	/*
+	 * Capability: the consumer's output writer represents an UNCHANGED
+	 * value representation (VR) datum as a protocol unchanged-column.
+	 *
+	 * When set, ReorderBufferToastReplace lets a class-U VR datum (its body
+	 * is not in the decoded stream) remain in the re-formed tuple instead of
+	 * refusing, because the session's writer will emit
+	 * LOGICALREP_COLUMN_UNCHANGED for it - the same protocol shape as an
+	 * unchanged ONDISK TOAST pointer - and no physical descriptor reaches
+	 * the wire.  False by default (contexts are palloc0-created); set by
+	 * the pgoutput plugin, whose logicalrep_write_tuple owns that
+	 * translation.  Datum-printing consumers must not set this: for them a
+	 * leftover VR datum would reach the detoast funnel, which refuses live
+	 * reads under logical decoding.
+	 */
+	bool		consumer_marks_unchanged_vr;
+
 	OutputPluginCallbacks callbacks;
 	OutputPluginOptions options;
 

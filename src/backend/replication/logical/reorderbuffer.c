@@ -5280,7 +5280,16 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 				continue;
 			}
 
-			/* class U: body not in the stream - keep the refusal */
+			/*
+			 * class U: the body is not in the stream.  If the consumer attests
+			 * that its writer represents an unchanged VR as a protocol
+			 * unchanged-column (pgoutput), leave the datum in the re-formed
+			 * tuple - it is copied byte-for-byte, the size discipline holds,
+			 * and the writer emits the marker instead of bytes.  Otherwise
+			 * refuse: a datum-printing consumer would hit the live-read funnel.
+			 */
+			if (ctx != NULL && ctx->consumer_marks_unchanged_vr)
+				continue;
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("logical decoding of a value representation is not supported")));
