@@ -18,3 +18,9 @@ RETURNS oid AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
 
 CREATE FUNCTION vr_jsonb_cold_forge_inmem_store(regclass, int)
 RETURNS void AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+CREATE FUNCTION vr_jsonb_cold_forge_stray_chunk(regclass, oid, int, int)
+RETURNS void AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+CREATE FUNCTION vr_jsonb_cold_forge_truncate_chunks(regclass, oid)
+RETURNS void AS 'MODULE_PATHNAME' LANGUAGE C STRICT;

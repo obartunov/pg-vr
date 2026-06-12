@@ -105,6 +105,16 @@ extern Datum vr_capture_logical_value(Datum value, MemoryContext cxt);
 extern PGDLLIMPORT int vr_logical_capture_limit;
 
 /*
+ * Explicit administrator opt-in (default off): permit constructing persistent
+ * external-body VR on logically logged relations (relaxes the C1 construction
+ * gate in vr_make_save_body only; vr_make_inline stays refused).  With this
+ * on, logical consumers without VR capture support (e.g. test_decoding) will
+ * refuse such relations' changes until the data is removed - a deliberate,
+ * admin-accepted fail-closed wedge.
+ */
+extern PGDLLIMPORT bool vr_logical_construction;
+
+/*
  * Transient in-memory VR body form.
  *
  * Logical decoding may construct a runtime-only VR datum whose body is an

@@ -125,10 +125,16 @@ vr_make_inline(Relation rel, VrKind kind, uint8 version,
 	MemoryContext old;
 
 	/*
-	 * Same construction boundary as vr_make_save_body: a persistent VR datum
-	 * (inline or substrate-backed) cannot be represented by logical decoding,
-	 * which refuses any external VR, so it would wedge a logical slot.  This is
-	 * a VR representation boundary, not a TOAST rule.
+	 * Same construction boundary as vr_make_save_body (C1), but UNCONDITIONAL:
+	 * vr_logical_construction does NOT relax this site.  An inline VR writes
+	 * no toast chunks, so under logical decoding it creates no toast_hash
+	 * entry, bypasses the class-S capture in ReorderBufferToastReplace, and
+	 * reaches logicalrep_write_tuple where the unchanged-column branch matches
+	 * any persistent VR - a NEW inline value would be sent as
+	 * LOGICALREP_COLUMN_UNCHANGED, silently losing the inserted value on the
+	 * subscriber.  Until an inline-aware capture exists, inline VR stays
+	 * refused under logical WAL.  This is a VR representation boundary, not a
+	 * TOAST rule.
 	 */
 	if (RelationIsLogicallyLogged(rel))
 		ereport(ERROR,
@@ -437,6 +443,14 @@ vr_read_supported(const VrHeaderInfo *hdr)
  * VR datum at capture, restoring the pure fail-closed boundary.
  */
 int			vr_logical_capture_limit = 1024;
+
+/*
+ * Administrator opt-in (GUC, default off): allow constructing persistent
+ * external-body VR on logically logged relations.  See the C1 gate comment in
+ * vr_make_save_body for the wedge hazard this switch accepts; vr_make_inline
+ * is NOT relaxed by it.
+ */
+bool		vr_logical_construction = false;
 
 /*
  * vr_capture_logical_value

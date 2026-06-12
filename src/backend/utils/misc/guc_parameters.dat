@@ -3436,6 +3436,13 @@
   max => 'MAX_KILOBYTES',
 },
 
+{ name => 'vr_logical_construction', type => 'bool', context => 'PGC_SIGHUP', group => 'WAL_SETTINGS',
+  short_desc => 'Allows constructing persistent value representations on logically logged relations.',
+  long_desc => 'Explicit administrator opt-in, off by default. When on, external-body value representations may be constructed under logical WAL; logical decoding consumers without value-representation capture support will refuse changes of such relations until the data is removed. Inline value representations remain refused regardless of this setting.',
+  variable => 'vr_logical_construction',
+  boot_val => 'false',
+},
+
 { name => 'wal_block_size', type => 'int', context => 'PGC_INTERNAL', group => 'PRESET_OPTIONS',
   short_desc => 'Shows the block size in the write ahead log.',
   flags => 'GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE',

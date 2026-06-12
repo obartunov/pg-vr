@@ -322,22 +322,33 @@ vr_make_save_body(Relation rel, AttrNumber attnum,
 	VrBodySaveRequest req;
 
 	/*
-	 * B-repl gate.  A persistent VR descriptor cannot be represented by logical
-	 * decoding: the reorderbuffer reassembly and the pgoutput wire both refuse a
-	 * VR datum, so a VR value on a logically logged relation would wedge any
-	 * logical replication slot that decodes its WAL.  vr_make_save_body is the
-	 * sole persistent-VR construction primitive, so refuse here - before any body
-	 * is written, leaving no half-built state, and reaching every caller of the
-	 * primitive including direct ones that bypass the selector chokepoint.  The
-	 * decode-time refusals stay as a backstop for VR created before the relation
-	 * became logically logged.  This is a VR representation boundary, not a TOAST
-	 * rule; the rewrite/relocate path does not call this primitive, so existing
-	 * VR values stay rewriteable.
+	 * B-repl gate (C1), relaxable.  A persistent VR descriptor reaches logical
+	 * decoding consumers only through the N16 capture disciplines: class S
+	 * (body chunks in the decoded stream, captured into ordinary bytes) or
+	 * class U (unchanged, emitted as LOGICALREP_COLUMN_UNCHANGED by capable
+	 * consumers).  Consumers without those disciplines (test_decoding, SQL
+	 * slots, third-party plugins) refuse and the slot wedges until the data
+	 * is removed.  Constructing VR under logical WAL is therefore an explicit
+	 * administrator opt-in: vr_logical_construction (default off).  With the
+	 * GUC off this site refuses before any body is written, leaving no
+	 * half-built state, and reaches every caller of the sole persistent-VR
+	 * construction primitive.  The decode-time refusals stay as a backstop
+	 * for VR created before the relation became logically logged.  This is a
+	 * VR representation boundary, not a TOAST rule; the rewrite/relocate path
+	 * does not call this primitive, so existing VR values stay rewriteable.
+	 *
+	 * NOTE: the relaxation deliberately covers ONLY this external-body
+	 * primitive.  vr_make_inline keeps an unconditional refusal: an inline VR
+	 * writes no chunks, so under decoding it produces no toast_hash entry,
+	 * bypasses the class-S capture, and would match the unchanged-column
+	 * branch in logicalrep_write_tuple - misrepresenting a NEW value as
+	 * unchanged, which is silent data loss on the subscriber.
 	 */
-	if (RelationIsLogicallyLogged(rel))
+	if (RelationIsLogicallyLogged(rel) && !vr_logical_construction)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("persistent value representation is not supported on logically logged relations")));
+				 errmsg("persistent value representation is not supported on logically logged relations"),
+				 errhint("Set \"vr_logical_construction\" to allow this; logical consumers without VR capture support will then refuse this relation's changes.")));
 
 	Assert(ctx != NULL);
 

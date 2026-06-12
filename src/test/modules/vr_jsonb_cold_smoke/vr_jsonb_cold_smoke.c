@@ -22,9 +22,12 @@
 #include "postgres.h"
 
 #include "access/detoast.h"		/* VARATT_EXTERNAL_GET_POINTER */
+#include "access/genam.h"		/* index_insert (stray-chunk forge) */
+#include "access/heapam.h"		/* heap_insert (stray-chunk forge) */
 #include "access/table.h"
 #include "access/toast_internals.h"
 #include "access/vr_toast.h"
+#include "access/xact.h"		/* GetCurrentCommandId (stray-chunk forge) */
 #include "executor/spi.h"
 #include "utils/lsyscache.h"
 #include "access/tableam.h"
@@ -343,4 +346,121 @@ vr_jsonb_cold_forge_inmem_store(PG_FUNCTION_ARGS)
 	SPI_finish();
 
 	PG_RETURN_VOID();			/* unreachable if fill_val refuses */
+}
+
+/*
+ * vr_jsonb_cold_forge_stray_chunk(target regclass, valueid oid,
+ *                                 seq int, nbytes int)
+ *
+ * Test-only (M3 / B3 evidence): WAL-log ONE ordinary toast chunk tuple
+ * (chunk_id = valueid, chunk_seq = seq, nbytes of filler) into targets
+
+/*
+ * vr_jsonb_cold_forge_stray_chunk(target regclass, valueid oid,
+ *                                 seq int, nbytes int)
+ *
+ * Test-only (M3 / B3 evidence): WAL-log ONE ordinary toast chunk tuple
+ * (chunk_id = valueid, chunk_seq = seq, nbytes of filler) into target's own
+ * TOAST relation, exactly the way toast_save_datum writes a chunk.  Executed
+ * inside a transaction whose decoded stream also carries a tuple holding a
+ * VR descriptor with that valueid (e.g. an other-column UPDATE keeping the
+ * VR column byte-identical), it makes the decode-side toast_hash claim the
+ * body is in the stream (class S) while providing an incomplete chunk set:
+ * the N16 reassembly must refuse with ERRCODE_DATA_CORRUPTED before any
+ * byte interpretation.  No production path writes such a chunk; this forges
+ * a corrupted/incomplete stream, which the forge cannot otherwise produce
+ * (the write path would read the body and fail at forge time, not decode
+ * time).  The stray live chunk is garbage in the toast relation; callers
+ * drop the table afterwards.
+ */
+PG_FUNCTION_INFO_V1(vr_jsonb_cold_forge_stray_chunk);
+Datum
+vr_jsonb_cold_forge_stray_chunk(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	Oid			valueid = PG_GETARG_OID(1);
+	int32		seq = PG_GETARG_INT32(2);
+	int32		nbytes = PG_GETARG_INT32(3);
+	Relation	rel;
+	Relation	toastrel;
+	Relation   *toastidxs;
+	int			num_indexes;
+	int			validIndex;
+	Datum		t_values[3];
+	bool		t_isnull[3] = {false, false, false};
+	bytea	   *chunk;
+	HeapTuple	toasttup;
+	CommandId	mycid = GetCurrentCommandId(true);
+
+	if (nbytes <= 0 || nbytes > 1024)
+		elog(ERROR, "forge: stray chunk nbytes out of range");
+
+	rel = table_open(relid, RowExclusiveLock);
+	if (!OidIsValid(rel->rd_rel->reltoastrelid))
+		elog(ERROR, "forge: relation has no toast relation");
+	toastrel = table_open(rel->rd_rel->reltoastrelid, RowExclusiveLock);
+	validIndex = toast_open_indexes(toastrel, RowExclusiveLock,
+									&toastidxs, &num_indexes);
+	(void) validIndex;
+
+	chunk = (bytea *) palloc(VARHDRSZ + nbytes);
+	SET_VARSIZE(chunk, VARHDRSZ + nbytes);
+	memset(VARDATA(chunk), 0x7f, nbytes);
+
+	t_values[0] = ObjectIdGetDatum(valueid);
+	t_values[1] = Int32GetDatum(seq);
+	t_values[2] = PointerGetDatum(chunk);
+
+	toasttup = heap_form_tuple(toastrel->rd_att, t_values, t_isnull);
+	heap_insert(toastrel, toasttup, mycid, 0, NULL);
+	for (int i = 0; i < num_indexes; i++)
+	{
+		if (toastidxs[i]->rd_index->indisready)
+			index_insert(toastidxs[i], t_values, t_isnull,
+						 &(toasttup->t_self),
+						 toastrel,
+						 toastidxs[i]->rd_index->indisunique ?
+						 UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
+						 false, NULL);
+	}
+	heap_freetuple(toasttup);
+
+	toast_close_indexes(toastidxs, num_indexes, RowExclusiveLock);
+	table_close(toastrel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
+
+	PG_RETURN_VOID();
+}
+
+/*
+ * vr_jsonb_cold_forge_truncate_chunks(target regclass, valueid oid)
+ *
+ * Test-only (B3 companion): delete every live chunk of the given valueid
+ * from target's own TOAST relation through the shared chunk-deletion
+ * mechanism.  Combined with vr_jsonb_cold_forge_stray_chunk(seq = 0) in the
+ * same transaction, the decoded stream then carries a chunk set that starts
+ * at seq 0 (so the upstream sequence check in
+ * ReorderBufferToastAppendChunk passes) but is incomplete against the
+ * descriptor's recorded body size - which the N16 VR reassembly must refuse
+ * with ERRCODE_DATA_CORRUPTED.  (A stray chunk with a non-zero first seq is
+ * rejected earlier by the upstream sequence check, whose mid-iteration
+ * elog(ERROR) currently trips the txn->size accounting Assert in cleanup on
+ * cassert builds - an upstream fragility noted in the M3 report, not
+ * exercised by this test.)
+ */
+PG_FUNCTION_INFO_V1(vr_jsonb_cold_forge_truncate_chunks);
+Datum
+vr_jsonb_cold_forge_truncate_chunks(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	Oid			valueid = PG_GETARG_OID(1);
+	Relation	rel;
+
+	rel = table_open(relid, RowExclusiveLock);
+	if (!OidIsValid(rel->rd_rel->reltoastrelid))
+		elog(ERROR, "forge: relation has no toast relation");
+	toast_delete_chunks_by_id(rel->rd_rel->reltoastrelid, valueid, false);
+	table_close(rel, RowExclusiveLock);
+
+	PG_RETURN_VOID();
 }

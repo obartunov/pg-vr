@@ -151,6 +151,9 @@
 #logical_decoding_work_mem = 64MB       # min 64kB
 #vr_logical_capture_limit = 1MB		# max size of a value representation
 					# materialized by logical capture; 0 refuses all
+#vr_logical_construction = off		# allow constructing value representations
+					# on logically logged relations (opt-in;
+					# non-capturing logical consumers will refuse)
 #max_stack_depth = 2MB                  # min 100kB
 #shared_memory_type = mmap              # the default is the first option
                                         # supported by the operating system:
