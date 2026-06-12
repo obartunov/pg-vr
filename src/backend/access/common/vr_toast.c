@@ -629,8 +629,15 @@ vr_body_size(Datum stored_value)
 		VARATT_EXTERNAL_GET_POINTER(v, attr);
 		return (Size) v.vr_logical_size - VARHDRSZ;
 	}
+	if (VARATT_IS_VR_INMEM(attr))
+	{
+		varatt_vr_inmem v;
 
-	elog(ERROR, "vr_body_size: not a persistent value representation");
+		VARATT_EXTERNAL_GET_POINTER(v, attr);
+		return (Size) v.vr_logical_size - VARHDRSZ;
+	}
+
+	elog(ERROR, "vr_body_size: not a value representation");
 	return 0;					/* unreachable; keep the compiler quiet */
 }
 
@@ -665,6 +672,90 @@ vr_body_read(Datum stored_value, Size offset, Size len, void *buf)
 		return;
 	}
 
+	if (VARATT_IS_VR_INMEM(attr))
+	{
+		varatt_vr_inmem v;
+		Size		logical_size;
+		struct varlena *stream;
+		struct varlena *full;
+
+		VARATT_EXTERNAL_GET_POINTER(v, attr);
+		logical_size = (Size) v.vr_logical_size - VARHDRSZ;
+
+		if (v.vr_body == NULL || v.vr_body_size < 0 ||
+			offset > logical_size || len > logical_size - offset)
+			elog(ERROR,
+				 "vr_body_read: malformed transient value representation");
+
+		/*
+		 * Mirror of the persistent arm above, with the in-memory stream as
+		 * the source instead of the TOAST substrate: the stream carries the
+		 * same bytes the substrate would store (including the compression
+		 * header word when a method is recorded), so wrapping it as an
+		 * inline varlena and going through detoast_attr decompresses on the
+		 * recorded method bits exactly as the reconstructed ONDISK pointer
+		 * would.  No storage is touched.
+		 */
+		stream = (struct varlena *) palloc(VARHDRSZ + v.vr_body_size);
+		if ((v.vr_flags & VR_FLAG_COMPRESSION_MASK) != 0)
+			SET_VARSIZE_COMPRESSED(stream, VARHDRSZ + v.vr_body_size);
+		else
+			SET_VARSIZE(stream, VARHDRSZ + v.vr_body_size);
+		memcpy(VARDATA(stream), v.vr_body, v.vr_body_size);
+
+		full = detoast_attr(stream);
+		if ((Size) VARSIZE_ANY_EXHDR(full) != logical_size)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("transient value representation body decompresses to %zu bytes, expected %zu",
+							(Size) VARSIZE_ANY_EXHDR(full), logical_size)));
+		if (len > 0)
+			memcpy(buf, VARDATA_ANY(full) + offset, len);
+
+		if (full != stream)
+			pfree(full);
+		pfree(stream);
+		return;
+	}
+
 	elog(ERROR,
-		 "vr_body_read: transient value representation body read is not implemented in this milestone");
+		 "vr_body_read: not a value representation");
+}
+
+/*
+ * vr_make_inmemory
+ *
+ * Wrap an already-reassembled in-memory body STREAM as a transient VR datum
+ * (VARTAG_VR_INMEM).  The stream carries the same bytes the TOAST substrate
+ * would store for this value (vr_body_size semantics match the persistent
+ * descriptor field: the physical/saved size, not the logical size), so the
+ * capture-limit check at the seam runs BEFORE any decompression, exactly as
+ * for a persistent value.  The buffer is not owned by the datum and must
+ * outlive it; the datum is transient only - fill_val/heap_form_tuple
+ * hard-refuse VARTAG_VR_INMEM, so it cannot be stored.
+ */
+Datum
+vr_make_inmemory(const VrHeaderInfo *hdr, const char *body, Size body_size,
+				 MemoryContext mcxt)
+{
+	varatt_vr_inmem v;
+	char	   *datum;
+
+	if (body_size > (Size) PG_INT32_MAX ||
+		hdr->logical_size > (Size) PG_INT32_MAX)
+		elog(ERROR, "vr_make_inmemory: body or logical size out of range");
+
+	v.vr_kind = (uint8) hdr->kind;
+	v.vr_version = hdr->version;
+	v.vr_flags = hdr->flags;
+	v.vr_logical_size = (int32) hdr->logical_size;
+	v.vr_body_size = (int32) body_size;
+	v.vr_body = body;
+
+	datum = MemoryContextAlloc(mcxt,
+							   VARHDRSZ_EXTERNAL + sizeof(varatt_vr_inmem));
+	SET_VARTAG_EXTERNAL(datum, VARTAG_VR_INMEM);
+	memcpy(VARDATA_EXTERNAL(datum), &v, sizeof(v));
+
+	return PointerGetDatum(datum);
 }

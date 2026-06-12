@@ -23,6 +23,10 @@
 
 #include "access/detoast.h"		/* VARATT_EXTERNAL_GET_POINTER */
 #include "access/table.h"
+#include "access/toast_internals.h"
+#include "access/vr_toast.h"
+#include "executor/spi.h"
+#include "utils/lsyscache.h"
 #include "access/tableam.h"
 #include "access/value_representation.h"
 #include "catalog/pg_type_d.h"	/* JSONBOID */
@@ -194,4 +198,149 @@ vr_jsonb_cold_capture(PG_FUNCTION_ARGS)
 		PG_RETURN_DATUM(vr_capture_logical_value(raw, CurrentMemoryContext));
 
 	PG_RETURN_DATUM(raw);
+}
+
+/*
+ * TEST-ONLY class-S forge (milestone M1): hand-build a persistent VR
+ * descriptor whose body is homed in a FOREIGN relation (src), then INSERT it
+ * into the target through the ordinary write path.  vr_rewrite_action says
+ * REHOME for a foreign home on INSERT, so the write path itself copies the
+ * body into the target's toast relation - writing real chunks in THIS
+ * transaction, which is exactly what makes the decoded transaction class S -
+ * and stores a properly homed VR descriptor.  No production policy is
+ * bypassed: this exercises the same REHOME edge REPACK relocation uses; only
+ * the descriptor fabrication (in place of the C1 construction seam) is
+ * test-only.
+ */
+PG_FUNCTION_INFO_V1(vr_jsonb_cold_forge_class_s);
+Datum
+vr_jsonb_cold_forge_class_s(PG_FUNCTION_ARGS)
+{
+	Oid			srcid = PG_GETARG_OID(0);
+	Oid			relid = PG_GETARG_OID(1);
+	int32		id = PG_GETARG_INT32(2);
+	struct varlena *payload = PG_GETARG_VARLENA_P(3);
+	Relation	src;
+	Relation	rel;
+	Size		body_len;
+	Datum		saved;
+	varatt_external ve;
+	varatt_vr	v;
+	char	   *d;
+	char	   *query;
+	Oid			argtypes[2] = {INT4OID, JSONBOID};
+	Datum		values[2];
+
+	src = table_open(srcid, RowExclusiveLock);
+	rel = table_open(relid, RowExclusiveLock);
+	if (!OidIsValid(src->rd_rel->reltoastrelid) ||
+		!OidIsValid(rel->rd_rel->reltoastrelid))
+		elog(ERROR, "forge: relation has no toast relation");
+
+	body_len = VARSIZE(payload) - VARHDRSZ;
+
+	/* body chunks into the FOREIGN (src) toast relation */
+	saved = toast_save_datum(src, PointerGetDatum(payload), NULL, 0);
+	VARATT_EXTERNAL_GET_POINTER(ve, DatumGetPointer(saved));
+
+	memset(&v, 0, sizeof(v));
+	v.vr_kind = (uint8) VR_KIND_JSONB_COLD;
+	v.vr_version = 1;
+	v.vr_flags = 0;				/* uncompressed body stream */
+	v.vr_logical_size = (int32) (VARHDRSZ + body_len);
+	v.vr_body_size = (int32) body_len;
+	v.vr_storage_oid = src->rd_rel->reltoastrelid;	/* foreign home */
+	v.vr_valueid = ve.va_valueid;
+
+	d = palloc(VARHDRSZ_EXTERNAL + sizeof(varatt_vr));
+	SET_VARTAG_EXTERNAL(d, VARTAG_VR);
+	memcpy(VARDATA_EXTERNAL(d), &v, sizeof(v));
+
+	query = psprintf("INSERT INTO %s (id, j, n) VALUES ($1, $2, 0)",
+					 quote_qualified_identifier(
+						 get_namespace_name(RelationGetNamespace(rel)),
+						 RelationGetRelationName(rel)));
+	table_close(rel, NoLock);	/* keep locks until commit */
+	table_close(src, NoLock);
+
+	values[0] = Int32GetDatum(id);
+	values[1] = PointerGetDatum(d);
+
+	if (SPI_connect() != SPI_OK_CONNECT)
+		elog(ERROR, "SPI_connect failed");
+
+	/*
+	 * A one-shot SPI execution folds supplied parameter values into planner
+	 * Consts, and makeConst flattens external datums (a Const must not carry
+	 * a pointer that can outlive a snapshot) - which would flatten the VR
+	 * before the write path ever sees it.  Force a GENERIC plan so the VR
+	 * datum stays a runtime Param all the way to fill_val and the toast pass.
+	 */
+	{
+		SPIPlanPtr	plan = SPI_prepare_cursor(query, 2, argtypes,
+											  CURSOR_OPT_GENERIC_PLAN);
+
+		if (plan == NULL)
+			elog(ERROR, "SPI_prepare_cursor failed: %s",
+				 SPI_result_code_string(SPI_result));
+		if (SPI_execute_plan(plan, values, NULL, false, 0) != SPI_OK_INSERT ||
+			SPI_processed != 1)
+			elog(ERROR, "forge: insert stored %llu rows, expected 1",
+				 (unsigned long long) SPI_processed);
+	}
+	SPI_finish();
+
+	PG_RETURN_OID(ve.va_valueid);
+}
+
+/*
+ * TEST-ONLY: attempt to STORE a transient VARTAG_VR_INMEM datum.  Must fail
+ * in fill_val ("cannot store a transient in-memory value representation");
+ * proves the producer's output cannot leak into heap storage.
+ */
+PG_FUNCTION_INFO_V1(vr_jsonb_cold_forge_inmem_store);
+Datum
+vr_jsonb_cold_forge_inmem_store(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	int32		id = PG_GETARG_INT32(1);
+	Relation	rel;
+	static const char body[] = "\"x\"";
+	VrHeaderInfo hdr;
+	Datum		inmem;
+	char	   *query;
+	Oid			argtypes[2] = {JSONBOID, INT4OID};
+	Datum		values[2];
+
+	rel = table_open(relid, RowExclusiveLock);
+	query = psprintf("UPDATE %s SET j = $1 WHERE id = $2",
+					 quote_qualified_identifier(
+						 get_namespace_name(RelationGetNamespace(rel)),
+						 RelationGetRelationName(rel)));
+	table_close(rel, NoLock);
+
+	hdr.kind = VR_KIND_JSONB_COLD;
+	hdr.version = 1;
+	hdr.flags = 0;
+	hdr.logical_size = VARHDRSZ + sizeof(body) - 1;
+	inmem = vr_make_inmemory(&hdr, body, sizeof(body) - 1,
+							 CurrentMemoryContext);
+
+	values[0] = inmem;
+	values[1] = Int32GetDatum(id);
+
+	if (SPI_connect() != SPI_OK_CONNECT)
+		elog(ERROR, "SPI_connect failed");
+	{
+		SPIPlanPtr	plan = SPI_prepare_cursor(query, 2, argtypes,
+											  CURSOR_OPT_GENERIC_PLAN);
+
+		if (plan == NULL)
+			elog(ERROR, "SPI_prepare_cursor failed: %s",
+				 SPI_result_code_string(SPI_result));
+		(void) SPI_execute_plan(plan, values, NULL, false, 0);
+	}
+	SPI_finish();
+
+	PG_RETURN_VOID();			/* unreachable if fill_val refuses */
 }

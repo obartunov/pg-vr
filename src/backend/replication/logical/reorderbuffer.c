@@ -90,6 +90,8 @@
 #include <sys/stat.h>
 
 #include "access/detoast.h"
+#include "access/value_representation.h"
+#include "access/vr_toast.h"
 #include "access/heapam.h"
 #include "access/rewriteheap.h"
 #include "access/transam.h"
@@ -5165,31 +5167,123 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		 * (VARATT_EXTERNAL_GET_POINTER) would misinterpret its larger header as
 		 * a TOAST pointer and derive a bogus value id and raw size.
 		 *
-		 * A VR datum can legitimately appear here when the transaction wrote
-		 * TOAST chunks for some OTHER column while the (unchanged, live) VR
-		 * value rode along in the new tuple - e.g. an UPDATE of an ordinary
-		 * toastable column on a table that also holds a VR column.  The VR
-		 * body itself wrote no chunks (construction is gated under logical
-		 * WAL), so there is nothing to reassemble for it.
+		 * Three-way decision:
 		 *
-		 * If the decoding context attests that its consumer captures VR
+		 * 1. If the decoding context attests that its consumer captures VR
 		 * datums (consumer_captures_vr; today only the built-in REPACK
 		 * decoding worker, whose pgrepack plugin flattens VR through the
 		 * logical-value capture seam before spilling), let the datum pass
 		 * through the re-formed tuple untouched: it is copied byte-for-byte
 		 * (VARTAG_SIZE knows VARTAG_VR), so the in-place tuple rewrite below
-		 * keeps its size discipline.  Otherwise refuse: general logical
-		 * decoding has no consumer that may see a physical VR datum.
+		 * keeps its size discipline.
+		 *
+		 * 2. Class S: the VR body's chunks are in THIS transaction's decoded
+		 * stream (its valueid has a toast_hash entry).  Reassemble the
+		 * physical stream from the decoded chunks only - never live storage -
+		 * package it as a transient VARTAG_VR_INMEM, and capture it through
+		 * the seam into ordinary flat logical bytes; the capture limit is
+		 * checked at the seam before any decompression or flattening.  The
+		 * flat value takes the toast entry's reconstructed slot (freed by
+		 * ReorderBufferToastReset after apply) and rides the existing
+		 * INDIRECT discipline, so the plugin sees an ordinary datum and no
+		 * physical descriptor can reach an output or spill boundary.
+		 *
+		 * 3. Otherwise refuse: the body is not in the stream and general
+		 * logical decoding has no consumer that may see a physical VR datum
+		 * (live reads are refused at the detoast funnel as well).
 		 */
 		if (VARATT_IS_VR(varlena_pointer))
 		{
 			LogicalDecodingContext *ctx = rb->private_data;
+			VrToastLocator vrloc;
+			ReorderBufferToastEnt *vrent;
 
-			if (ctx == NULL || !ctx->consumer_captures_vr)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("logical decoding of a value representation is not supported")));
-			continue;
+			if (ctx != NULL && ctx->consumer_captures_vr)
+				continue;
+
+			if (vr_get_body_locator(attrs[natt], &vrloc) &&
+				(vrent = (ReorderBufferToastEnt *)
+				 hash_search(txn->toast_hash, &vrloc.valueid,
+							 HASH_FIND, NULL)) != NULL)
+			{
+				/* class S: body chunks are in the decoded stream */
+				if (vrent->reconstructed == NULL)
+				{
+					VrHeaderInfo vrhdr;
+					Size		stream_size;
+					char	   *stream;
+					Size		stream_done = 0;
+					Datum		inmem;
+					Datum		flat;
+					dlist_iter	vit;
+
+					if (!vr_header_info(attrs[natt], &vrhdr))
+						elog(ERROR, "invalid value representation header in decoded tuple");
+					stream_size = vr_toast_body_size(attrs[natt]);
+					stream = palloc(stream_size);
+
+					dlist_foreach(vit, &vrent->chunks)
+					{
+						bool		visnull;
+						ReorderBufferChange *vchange;
+						HeapTuple	vtup;
+						Pointer		vchunk;
+						Size		vchunklen;
+
+						vchange = dlist_container(ReorderBufferChange, node,
+												  vit.cur);
+						vtup = vchange->data.tp.newtuple;
+						vchunk = DatumGetPointer(fastgetattr(vtup, 3,
+															 toast_desc,
+															 &visnull));
+						Assert(!visnull);
+						Assert(!VARATT_IS_EXTERNAL(vchunk));
+						Assert(!VARATT_IS_SHORT(vchunk));
+
+						vchunklen = VARSIZE(vchunk) - VARHDRSZ;
+						if (stream_done + vchunklen > stream_size)
+							ereport(ERROR,
+									(errcode(ERRCODE_DATA_CORRUPTED),
+									 errmsg("decoded toast chunks for value representation body %u exceed its recorded size %zu",
+											vrloc.valueid, stream_size)));
+						memcpy(stream + stream_done, VARDATA(vchunk),
+							   vchunklen);
+						stream_done += vchunklen;
+					}
+					if (stream_done != stream_size)
+						ereport(ERROR,
+								(errcode(ERRCODE_DATA_CORRUPTED),
+								 errmsg("decoded toast chunks for value representation body %u are incomplete: %zu of %zu bytes",
+										vrloc.valueid, stream_done,
+										stream_size)));
+
+					inmem = vr_make_inmemory(&vrhdr, stream, stream_size,
+											 CurrentMemoryContext);
+					flat = vr_capture_logical_value(inmem,
+													CurrentMemoryContext);
+					vrent->reconstructed =
+						(struct varlena *) DatumGetPointer(flat);
+					pfree(DatumGetPointer(inmem));
+					pfree(stream);
+				}
+
+				new_datum = (struct varlena *) palloc0(INDIRECT_POINTER_SIZE);
+				free[natt] = true;
+
+				memset(&redirect_pointer, 0, sizeof(redirect_pointer));
+				redirect_pointer.pointer = vrent->reconstructed;
+				SET_VARTAG_EXTERNAL(new_datum, VARTAG_INDIRECT);
+				memcpy(VARDATA_EXTERNAL(new_datum), &redirect_pointer,
+					   sizeof(redirect_pointer));
+
+				attrs[natt] = PointerGetDatum(new_datum);
+				continue;
+			}
+
+			/* class U: body not in the stream - keep the refusal */
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("logical decoding of a value representation is not supported")));
 		}
 
 		VARATT_EXTERNAL_GET_POINTER(toast_pointer, varlena_pointer);

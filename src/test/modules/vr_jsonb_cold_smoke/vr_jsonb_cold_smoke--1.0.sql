@@ -12,3 +12,9 @@ AS 'MODULE_PATHNAME', 'vr_jsonb_cold_probe' LANGUAGE C STRICT;
 
 CREATE FUNCTION vr_jsonb_cold_capture(j jsonb) RETURNS jsonb
 AS 'MODULE_PATHNAME', 'vr_jsonb_cold_capture' LANGUAGE C STRICT;
+
+CREATE FUNCTION vr_jsonb_cold_forge_class_s(regclass, regclass, int, jsonb)
+RETURNS oid AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+CREATE FUNCTION vr_jsonb_cold_forge_inmem_store(regclass, int)
+RETURNS void AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
