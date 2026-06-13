@@ -430,7 +430,6 @@ toast_tuple_externalize(ToastTupleContext *ttc, int attribute, uint32 options)
 	 * pointer.  make() may decline; on decline or an unknown kind/method we fall
 	 * back to ordinary TOAST.
 	 */
-	if (vr_kind_selector_hook != NULL)
 	{
 		VrMakeContext mctx;
 		VrKind		kind;
@@ -438,8 +437,23 @@ toast_tuple_externalize(ToastTupleContext *ttc, int attribute, uint32 options)
 		mctx.mcxt = CurrentMemoryContext;
 		mctx.inline_budget = 0;
 		mctx.toast_options = options;
-		kind = vr_kind_selector_hook(ttc->ttc_rel, (AttrNumber) (attribute + 1),
-									 old_value, &mctx);
+
+		/*
+		 * Built-in selector first: it applies the durable per-column VR
+		 * storage policy (vr_jsonb_cold), the only production control
+		 * surface.  The extension hook is consulted only as a fallback when
+		 * the built-in declines, so a test/extension hook cannot mask a
+		 * durable core policy.  Unmarked columns make the built-in return
+		 * VR_KIND_INVALID, so default behavior is exactly stock.
+		 */
+		kind = vr_builtin_kind_selector(ttc->ttc_rel,
+										(AttrNumber) (attribute + 1),
+										old_value, &mctx);
+		if (kind == VR_KIND_INVALID && vr_kind_selector_hook != NULL)
+			kind = vr_kind_selector_hook(ttc->ttc_rel,
+										 (AttrNumber) (attribute + 1),
+										 old_value, &mctx);
+
 		if (kind != VR_KIND_INVALID)
 		{
 			const ValueRepresentationMethods *m = vr_lookup_methods(kind);

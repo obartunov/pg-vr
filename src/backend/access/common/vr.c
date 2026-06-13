@@ -24,6 +24,7 @@
 #include "fmgr.h"				/* pg_detoast_datum */
 #include "utils/rel.h"			/* RelationIsLogicallyLogged */
 #include "utils/attoptcache.h"	/* get_attribute_options, AttributeOpts */
+#include "catalog/pg_type_d.h"	/* JSONBOID */
 
 /*
  * Static methods table, indexed by VrKind.
@@ -365,6 +366,49 @@ vr_attribute_storage_policy(Relation rel, AttrNumber attnum)
 	aopt = get_attribute_options(RelationGetRelid(rel), attnum);
 
 	return aopt != NULL && aopt->vr_jsonb_cold;
+}
+
+/*
+ * vr_builtin_kind_selector
+ *
+ * The first-class, in-core VR kind selector.  Consulted before the extension
+ * hook on the TOAST externalize/producer path (toast_helper.c).  It applies
+ * the strict eligibility rule and returns VR_KIND_JSONB_COLD only when ALL of:
+ *
+ *   1. the attribute is jsonb (atttypid == JSONBOID);
+ *   2. the column carries the durable per-column VR storage policy
+ *      (vr_attribute_storage_policy, i.e. reloption vr_jsonb_cold = on);
+ *   3. the flat value is at least about two ordinary TOAST chunks
+ *      (VR_JSONB_COLD_MIN = 2 * TOAST_MAX_CHUNK_SIZE).
+ *
+ * Otherwise VR_KIND_INVALID (ordinary TOAST).  make() remains the final
+ * authority and may still decline.  This is the only production control
+ * surface for VR construction; it is inert until a column is marked, so the
+ * default behavior of an unmarked column is exactly stock.  Write path only:
+ * never consulted on read (reads are self-describing).  It does not consult or
+ * override vr_logical_construction; that veto is applied independently in
+ * vr_make_save_body for logically logged relations.
+ */
+VrKind
+vr_builtin_kind_selector(Relation rel, AttrNumber attnum, Datum flat_value,
+						 const VrMakeContext *ctx)
+{
+	Form_pg_attribute att;
+
+	/* 2. policy gate first: cheap and the usual reason to decline. */
+	if (!vr_attribute_storage_policy(rel, attnum))
+		return VR_KIND_INVALID;
+
+	/* 1. type gate: jsonb only. */
+	att = TupleDescAttr(RelationGetDescr(rel), attnum - 1);
+	if (att->atttypid != JSONBOID)
+		return VR_KIND_INVALID;
+
+	/* 3. size floor: genuinely large values only. */
+	if (VARSIZE_ANY_EXHDR(DatumGetPointer(flat_value)) < VR_JSONB_COLD_MIN)
+		return VR_KIND_INVALID;
+
+	return VR_KIND_JSONB_COLD;
 }
 
 /*

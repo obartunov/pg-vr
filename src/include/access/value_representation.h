@@ -28,6 +28,7 @@
 #define VALUE_REPRESENTATION_H
 
 #include "access/attnum.h"
+#include "access/heaptoast.h"	/* TOAST_MAX_CHUNK_SIZE */
 #include "utils/memutils.h"
 #include "utils/relcache.h"
 #include "varatt.h"
@@ -360,5 +361,27 @@ extern PGDLLIMPORT vr_kind_selector_hook_type vr_kind_selector_hook;
  * is the user's, via ALTER TABLE ... ALTER COLUMN ... SET (vr_jsonb_cold = on).
  */
 extern bool vr_attribute_storage_policy(Relation rel, AttrNumber attnum);
+
+/*
+ * Minimum flat (detoasted, header-excluded) jsonb size for the built-in
+ * selector to choose VR_KIND_JSONB_COLD: at least about two ordinary TOAST
+ * chunks.  Expressed in TOAST geometry rather than a magic constant, so it
+ * tracks non-default BLCKSZ builds: TOAST_MAX_CHUNK_SIZE already accounts for
+ * page/header/tuple/chunk_id/chunk_seq overhead, and on the default 8 kB page
+ * this is ~4 kB.  The rule means "do not use VR for values smaller than about
+ * two ordinary TOAST chunks".  Not a GUC, not a reloption knob.
+ */
+#define VR_JSONB_COLD_MIN	(2 * TOAST_MAX_CHUNK_SIZE)
+
+/*
+ * Built-in VR kind selector.  Applies the strict in-core eligibility rule
+ * (jsonb only, column carries the durable vr_jsonb_cold policy, value at or
+ * above VR_JSONB_COLD_MIN) and returns VR_KIND_JSONB_COLD, else
+ * VR_KIND_INVALID.  Consulted first on the externalize/producer path; the
+ * extension hook is the fallback.  Write path only; never consulted on read.
+ */
+extern VrKind vr_builtin_kind_selector(Relation rel, AttrNumber attnum,
+									   Datum flat_value,
+									   const VrMakeContext *ctx);
 
 #endif							/* VALUE_REPRESENTATION_H */

@@ -43,34 +43,27 @@
 
 PG_MODULE_MAGIC;
 
-/* jsonb values at least this large (logical bytes) are opted into VR. */
-#define VR_JSONB_COLD_MIN 4096
-
 /* Relation armed by vr_jsonb_cold_arm(); InvalidOid = nothing armed. */
 static Oid	vr_jsonb_cold_armed_relid = InvalidOid;
 
 /*
- * selector(): opt a large jsonb attribute into the in-core VR_KIND_JSONB_COLD
- * kind.  Type-aware (atttypid == JSONBOID) and size-gated.  Selection fires
- * when EITHER the durable per-column VR storage policy is set on the attribute
- * (attribute reloption vr_jsonb_cold = on, read via vr_attribute_storage_policy)
- * OR the relation is armed backend-locally (legacy test path).  The durable
- * policy is the production-shaped surface; the backend-local arm is retained so
- * the existing suite keeps working and so a test can drive selection without DDL.
+ * Test/experiment selector, installed as the EXTENSION hook.  It is now only
+ * a fallback: the producer path consults the in-core built-in selector first
+ * (which owns the durable per-column vr_jsonb_cold policy), and this hook only
+ * for values the built-in declined.  To avoid duplicating - and thereby
+ * masking - the core policy path, this selector handles ONLY the legacy
+ * backend-local arm (vr_jsonb_cold_arm), so a test can drive VR for an
+ * UNMARKED column without DDL.  It is still type- and size-gated.  Columns
+ * carrying the durable policy are handled by the core selector, not here.
  */
 static VrKind
 vr_jsonb_cold_selector(Relation rel, AttrNumber attnum, Datum flat_value,
 					   const VrMakeContext *ctx)
 {
 	Form_pg_attribute att;
-	bool		armed;
-	bool		policy;
 
-	armed = OidIsValid(vr_jsonb_cold_armed_relid) &&
-		RelationGetRelid(rel) == vr_jsonb_cold_armed_relid;
-	policy = vr_attribute_storage_policy(rel, attnum);
-
-	if (!armed && !policy)
+	if (!OidIsValid(vr_jsonb_cold_armed_relid) ||
+		RelationGetRelid(rel) != vr_jsonb_cold_armed_relid)
 		return VR_KIND_INVALID;
 
 	att = TupleDescAttr(RelationGetDescr(rel), attnum - 1);
