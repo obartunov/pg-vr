@@ -23,6 +23,7 @@
 #include "access/value_representation.h"
 #include "fmgr.h"				/* pg_detoast_datum */
 #include "utils/rel.h"			/* RelationIsLogicallyLogged */
+#include "utils/attoptcache.h"	/* get_attribute_options, AttributeOpts */
 
 /*
  * Static methods table, indexed by VrKind.
@@ -336,6 +337,35 @@ static const ValueRepresentationMethods *vr_registered_methods[VR_KIND__COUNT] =
  * installs a selector to opt specific values into a VR representation.
  */
 vr_kind_selector_hook_type vr_kind_selector_hook = NULL;
+
+/*
+ * vr_attribute_storage_policy
+ *
+ * Read the durable per-column VR storage policy for (rel, attnum) from the
+ * relcache attribute options (pg_attribute.attoptions, parsed into
+ * AttributeOpts).  Returns true iff the attribute reloption vr_jsonb_cold is
+ * set on.  Default (no option) is false: stock behavior, nothing is VR.
+ *
+ * This is policy STORAGE plumbing only.  Core ships no autonomous selector
+ * that consults it; the decision of which jsonb columns become cold is the
+ * user's, expressed as ALTER TABLE ... ALTER COLUMN ... SET (vr_jsonb_cold =
+ * on).  A selector (the test selector today, a sanctioned in-core selector in
+ * a later gate) is what calls this on the write path.  It is never called on
+ * a read path: reads are self-describing and need no policy knob.
+ */
+bool
+vr_attribute_storage_policy(Relation rel, AttrNumber attnum)
+{
+	AttributeOpts *aopt;
+
+	/* System and bogus attribute numbers carry no VR policy. */
+	if (attnum < 1)
+		return false;
+
+	aopt = get_attribute_options(RelationGetRelid(rel), attnum);
+
+	return aopt != NULL && aopt->vr_jsonb_cold;
+}
 
 /*
  * vr_register_methods

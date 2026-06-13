@@ -350,4 +350,15 @@ typedef VrKind (*vr_kind_selector_hook_type) (Relation rel, AttrNumber attnum,
 											   const VrMakeContext *ctx);
 extern PGDLLIMPORT vr_kind_selector_hook_type vr_kind_selector_hook;
 
+/*
+ * Per-column VR storage policy reader.  Returns true if the attribute carries
+ * the durable VR storage policy (attribute reloption vr_jsonb_cold = on),
+ * read from the relcache attribute options.  This is policy STORAGE only: it
+ * is consulted on the write path by a selector that decides representation; it
+ * is never consulted on read (reads are self-describing).  Core ships no
+ * autonomous selector that calls this - the decision of which columns to mark
+ * is the user's, via ALTER TABLE ... ALTER COLUMN ... SET (vr_jsonb_cold = on).
+ */
+extern bool vr_attribute_storage_policy(Relation rel, AttrNumber attnum);
+
 #endif							/* VALUE_REPRESENTATION_H */

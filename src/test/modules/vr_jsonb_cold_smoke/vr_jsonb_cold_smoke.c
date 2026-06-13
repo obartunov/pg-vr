@@ -50,18 +50,27 @@ PG_MODULE_MAGIC;
 static Oid	vr_jsonb_cold_armed_relid = InvalidOid;
 
 /*
- * selector(): opt a large jsonb attribute of the armed relation into the
- * in-core VR_KIND_JSONB_COLD kind.  Type-aware (atttypid == JSONBOID) and
- * size-gated; scoped to the armed relation.
+ * selector(): opt a large jsonb attribute into the in-core VR_KIND_JSONB_COLD
+ * kind.  Type-aware (atttypid == JSONBOID) and size-gated.  Selection fires
+ * when EITHER the durable per-column VR storage policy is set on the attribute
+ * (attribute reloption vr_jsonb_cold = on, read via vr_attribute_storage_policy)
+ * OR the relation is armed backend-locally (legacy test path).  The durable
+ * policy is the production-shaped surface; the backend-local arm is retained so
+ * the existing suite keeps working and so a test can drive selection without DDL.
  */
 static VrKind
 vr_jsonb_cold_selector(Relation rel, AttrNumber attnum, Datum flat_value,
 					   const VrMakeContext *ctx)
 {
 	Form_pg_attribute att;
+	bool		armed;
+	bool		policy;
 
-	if (!OidIsValid(vr_jsonb_cold_armed_relid) ||
-		RelationGetRelid(rel) != vr_jsonb_cold_armed_relid)
+	armed = OidIsValid(vr_jsonb_cold_armed_relid) &&
+		RelationGetRelid(rel) == vr_jsonb_cold_armed_relid;
+	policy = vr_attribute_storage_policy(rel, attnum);
+
+	if (!armed && !policy)
 		return VR_KIND_INVALID;
 
 	att = TupleDescAttr(RelationGetDescr(rel), attnum - 1);

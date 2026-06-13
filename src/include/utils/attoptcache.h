@@ -21,6 +21,8 @@ typedef struct AttributeOpts
 	int32		vl_len_;		/* varlena header (do not touch directly!) */
 	float8		n_distinct;
 	float8		n_distinct_inherited;
+	bool		vr_jsonb_cold;	/* per-column VR storage policy: eligible for
+								 * JSONB_COLD value representation on new writes */
 } AttributeOpts;
 
 extern AttributeOpts *get_attribute_options(Oid attrelid, int attnum);

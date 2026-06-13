@@ -162,6 +162,17 @@ static relopt_bool boolRelOpts[] =
 		},
 		true
 	},
+	{
+		{
+			"vr_jsonb_cold",
+			"Marks this jsonb column as eligible for the JSONB_COLD value representation on new writes",
+			RELOPT_KIND_ATTRIBUTE,
+			ShareUpdateExclusiveLock	/* applies only to later writes;
+										 * existing data is not
+										 * re-represented */
+		},
+		false
+	},
 	/* list terminator */
 	{{NULL}}
 };
@@ -2215,7 +2226,8 @@ attribute_reloptions(Datum reloptions, bool validate)
 {
 	static const relopt_parse_elt tab[] = {
 		{"n_distinct", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct)},
-		{"n_distinct_inherited", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct_inherited)}
+		{"n_distinct_inherited", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct_inherited)},
+		{"vr_jsonb_cold", RELOPT_TYPE_BOOL, offsetof(AttributeOpts, vr_jsonb_cold)}
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate,
