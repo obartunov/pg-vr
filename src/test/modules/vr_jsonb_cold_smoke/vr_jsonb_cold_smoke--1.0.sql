@@ -27,3 +27,9 @@ RETURNS void AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
 
 CREATE FUNCTION vr_jsonb_cold_forge_version_s(regclass, regclass, int, jsonb, int)
 RETURNS oid AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+CREATE FUNCTION vr_force_fresh(jsonb) RETURNS jsonb
+AS 'MODULE_PATHNAME', 'vr_force_fresh' LANGUAGE C STRICT;
+
+CREATE FUNCTION vr_rerepresent_column(regclass, name) RETURNS text
+AS 'MODULE_PATHNAME', 'vr_rerepresent_column' LANGUAGE C STRICT;

@@ -548,3 +548,193 @@ vr_jsonb_cold_forge_version_s(PG_FUNCTION_ARGS)
 
 	PG_RETURN_OID(ve.va_valueid);
 }
+
+/*
+ * vr_force_fresh(jsonb) -> jsonb
+ *
+ * Return a fresh, fully-detoasted copy of the input jsonb: a pure byte copy of
+ * the canonical jsonb value (pg_detoast_datum_copy, no parse/reserialize), so
+ * it is value-exact for every shape (object, array, scalar) and the result is
+ * a non-external Datum.  Re-storing it via UPDATE re-enters the toast
+ * externalize path so the in-core E24 selector can run.  No eligibility policy
+ * of its own.
+ */
+PG_FUNCTION_INFO_V1(vr_force_fresh);
+Datum
+vr_force_fresh(PG_FUNCTION_ARGS)
+{
+	struct varlena *in = (struct varlena *) PG_GETARG_POINTER(0);
+	struct varlena *copy = pg_detoast_datum_copy(in);
+
+	PG_RETURN_POINTER(copy);
+}
+
+/*
+ * vr_rerepresent_column(rel regclass, attname name) -> text
+ *
+ * Explicit administrator-triggered re-representation (E26) for one column.
+ * Scans the relation; for each row whose target value is an ordinary (non-VR)
+ * jsonb, re-stores it through the ORDINARY write path so the E24 in-core
+ * selector decides whether it becomes VR_KIND_JSONB_COLD.  Rows already stored
+ * as VR are skipped (counted already_vr), never flattened or rebuilt.  No
+ * second eligibility policy: jsonb / size / make() are the E24 selector's job.
+ * vr_logical_construction is composed with, not bypassed: on a logically
+ * logged relation with the veto off we pre-check and ERROR before scanning
+ * (the write path would ERROR at make() anyway), so nothing is half-converted.
+ *
+ * Ordinary UPDATE semantics: RowExclusiveLock, MVCC, normal heap/WAL/TOAST,
+ * dead tuples for vacuum.  One call = one transaction.  Conversion is one
+ * UPDATE ... SET col = vr_force_fresh(col) WHERE ctid = ANY(ordinary ctids),
+ * so heap-update correctness is delegated to the executor.  Counts are exact.
+ */
+PG_FUNCTION_INFO_V1(vr_rerepresent_column);
+Datum
+vr_rerepresent_column(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	Name		attname = PG_GETARG_NAME(1);
+	Relation	rel;
+	AttrNumber	attnum;
+	Form_pg_attribute att;
+	TableScanDesc scan;
+	TupleTableSlot *slot;
+	int64		rows_scanned = 0,
+				rows_already_vr = 0,
+				rows_ordinary = 0,
+				rows_null = 0;
+	StringInfoData ctids;
+	StringInfoData report;
+	bool		first = true;
+
+	rel = table_open(relid, RowExclusiveLock);
+
+	attnum = get_attnum(relid, NameStr(*attname));
+	if (attnum == InvalidAttrNumber)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_COLUMN),
+				 errmsg("column \"%s\" does not exist", NameStr(*attname))));
+
+	att = TupleDescAttr(RelationGetDescr(rel), attnum - 1);
+	if (att->atttypid != JSONBOID)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				 errmsg("vr_rerepresent_column supports only jsonb columns")));
+
+	/* Fail closed up front: logically logged + veto off. */
+	if (RelationIsLogicallyLogged(rel) && !vr_logical_construction)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("persistent value representation is not supported on logically logged relations"),
+				 errhint("Set \"vr_logical_construction\" to allow re-representation on this relation.")));
+
+	/* Pass 1: classify; collect ctids of ordinary (non-VR) jsonb. */
+	initStringInfo(&ctids);
+	scan = table_beginscan(rel, GetActiveSnapshot(), 0, NULL, 0);
+	slot = table_slot_create(rel, NULL);
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	{
+		bool		isnull;
+		Datum		d = slot_getattr(slot, attnum, &isnull);
+		struct varlena *v;
+		ItemPointer tid;
+
+		rows_scanned++;
+		if (isnull)
+		{
+			rows_null++;
+			continue;
+		}
+		v = (struct varlena *) DatumGetPointer(d);
+
+		if (VARATT_IS_EXTERNAL_VR(v))
+		{
+			rows_already_vr++;
+			continue;
+		}
+
+		rows_ordinary++;
+		tid = &slot->tts_tid;
+		appendStringInfo(&ctids, "%s'(%u,%u)'::tid",
+						 first ? "" : ",",
+						 ItemPointerGetBlockNumber(tid),
+						 ItemPointerGetOffsetNumber(tid));
+		first = false;
+	}
+	ExecDropSingleTupleTableSlot(slot);
+	table_endscan(scan);
+
+	/* Pass 2: re-store ordinary rows through the ordinary write path. */
+	if (rows_ordinary > 0)
+	{
+		char	   *relname = quote_qualified_identifier(
+						   get_namespace_name(RelationGetNamespace(rel)),
+						   RelationGetRelationName(rel));
+		const char *colname = quote_identifier(NameStr(*attname));
+		StringInfoData q;
+
+		initStringInfo(&q);
+		appendStringInfo(&q,
+						 "UPDATE %s SET %s = vr_force_fresh(%s) WHERE ctid = ANY(ARRAY[%s])",
+						 relname, colname, colname, ctids.data);
+
+		if (SPI_connect() != SPI_OK_CONNECT)
+			elog(ERROR, "SPI_connect failed");
+		if (SPI_execute(q.data, false, 0) != SPI_OK_UPDATE)
+			elog(ERROR, "vr_rerepresent_column: update failed");
+		SPI_finish();
+		pfree(q.data);
+	}
+
+	/* Pass 3: exact post-count of rows still ordinary on the column. */
+	{
+		int64		converted;
+		int64		ordinary_remaining = 0;
+		Snapshot	post;
+
+		/*
+		 * The conversion UPDATE ran in this same transaction via SPI; advance
+		 * the command counter and take a fresh snapshot so this scan sees the
+		 * just-updated tuples (GetActiveSnapshot() predates the UPDATE and
+		 * would miss them).
+		 */
+		CommandCounterIncrement();
+		post = RegisterSnapshot(GetLatestSnapshot());
+
+		scan = table_beginscan(rel, post, 0, NULL, 0);
+		slot = table_slot_create(rel, NULL);
+		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+		{
+			bool		isnull;
+			Datum		d = slot_getattr(slot, attnum, &isnull);
+			struct varlena *v;
+
+			if (isnull)
+				continue;
+			v = (struct varlena *) DatumGetPointer(d);
+			if (VARATT_IS_EXTERNAL_VR(v))
+				continue;
+			ordinary_remaining++;
+		}
+		ExecDropSingleTupleTableSlot(slot);
+		table_endscan(scan);
+		UnregisterSnapshot(post);
+
+		converted = rows_ordinary - ordinary_remaining;
+		if (converted < 0)
+			converted = 0;
+
+		initStringInfo(&report);
+		appendStringInfo(&report,
+						 "rows_scanned=%lld rows_converted=%lld rows_already_vr=%lld "
+						 "rows_declined=%lld rows_null=%lld ordinary_remaining=%lld",
+						 (long long) rows_scanned,
+						 (long long) converted,
+						 (long long) rows_already_vr,
+						 (long long) (rows_ordinary - converted),
+						 (long long) rows_null,
+						 (long long) ordinary_remaining);
+	}
+
+	table_close(rel, RowExclusiveLock);
+	PG_RETURN_TEXT_P(cstring_to_text(report.data));
+}
