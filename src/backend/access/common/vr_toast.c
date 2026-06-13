@@ -379,6 +379,19 @@ vr_build_source_external(const varatt_vr *v, varatt_external *ve)
 {
 	uint16		vrcomp;
 
+	/*
+	 * Generic version gate on the substrate body path: refuse an unsupported
+	 * persistent format version before interpreting any locator/flag field.
+	 * This path is reached by the rewrite/relocate body access (CLUSTER,
+	 * VACUUM FULL, ALTER rewrite, REPACK) and by the physical body-size
+	 * helper, none of which go through the detoast/capture funnels; a future
+	 * v2 descriptor must fail loudly here rather than be relocated under v1
+	 * field assumptions.
+	 */
+	if (v->vr_version != 1)
+		elog(ERROR, "VR body read: unsupported version %u",
+			 (unsigned) v->vr_version);
+
 	if ((v->vr_flags & ~VR_FLAG_KNOWN_MASK) != 0)
 		elog(ERROR, "VR body read: unsupported flags 0x%04x",
 			 (unsigned) v->vr_flags);
@@ -470,6 +483,20 @@ vr_toast_body_copy_to_relation(Datum old_stored, Relation new_rel,
 				 errmsg("cannot relocate a value representation: target relation has no TOAST storage")));
 
 	VARATT_EXTERNAL_GET_POINTER(v, old);
+
+	/*
+	 * Version gate before either relocate path (fast duplicate-version path or
+	 * full copy): refuse an unsupported persistent version up front so the
+	 * fast path below, which reads locator fields at fixed v1 offsets, can
+	 * never act on a future layout.  The full-copy path also gates inside
+	 * vr_build_source_external; this keeps the fast path safe without relying
+	 * on copy-ordering.
+	 */
+	if (v.vr_version != 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot relocate value representation: unsupported version %u",
+						(unsigned int) v.vr_version)));
 
 	/*
 	 * Fast path for a duplicate version during a heap rewrite.  A rewrite copies

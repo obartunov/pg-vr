@@ -489,6 +489,17 @@ vr_capture_logical_value(Datum value, MemoryContext cxt)
 	if (!vr_header_info(value, &hdr))
 		elog(ERROR, "vr_capture_logical_value called on a non-VR datum");
 
+	/*
+	 * Generic version gate: refuse an unsupported persistent format version
+	 * before any body access (same rule as vr_detoast_flatten; vr_version is
+	 * the evolution lever).
+	 */
+	if (hdr.version != 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("unsupported value representation version %u",
+						(unsigned int) hdr.version)));
+
 	if (!vr_read_supported(&hdr))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),

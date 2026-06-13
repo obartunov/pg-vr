@@ -69,6 +69,19 @@ vr_detoast_flatten(varlena *attr)
 		elog(ERROR, "vr_detoast_flatten called on a non-VR datum");
 
 	/*
+	 * Generic version gate: refuse any unsupported persistent format version
+	 * before any body access.  vr_version is the format evolution lever; a v1
+	 * binary must fail loudly on a future layout rather than read its body
+	 * under v1 assumptions.  This is independent of, and ordered before, the
+	 * flag and kind gates below.
+	 */
+	if (hdr.version != 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("unsupported value representation version %u",
+						(unsigned int) hdr.version)));
+
+	/*
 	 * Generic read validity (VR-owned policy): vr_read_supported() accepts the
 	 * compression bits and VR_FLAG_INLINE and rejects any other persistent flag
 	 * bit.  (The narrower VR_FLAG_KNOWN_MASK is the TOAST-source mask used by

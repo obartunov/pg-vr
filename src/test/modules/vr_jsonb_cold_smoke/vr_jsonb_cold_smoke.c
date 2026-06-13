@@ -464,3 +464,85 @@ vr_jsonb_cold_forge_truncate_chunks(PG_FUNCTION_ARGS)
 
 	PG_RETURN_VOID();
 }
+
+/*
+ * vr_jsonb_cold_forge_version_s(src regclass, target regclass, id int,
+ *                               payload jsonb, version int)
+ *
+ * Test-only (VR_VERSION_READ_GATE_V0): identical to forge_class_s but stamps
+ * an arbitrary vr_version into the persistent descriptor, so a reader can be
+ * driven with an unsupported (e.g. 2) persistent format version.  The body is
+ * a real TOAST-chunked stream in src; the point is that every generic read
+ * path must refuse on the version field BEFORE touching that body.
+ */
+PG_FUNCTION_INFO_V1(vr_jsonb_cold_forge_version_s);
+Datum
+vr_jsonb_cold_forge_version_s(PG_FUNCTION_ARGS)
+{
+	Oid			srcid = PG_GETARG_OID(0);
+	Oid			relid = PG_GETARG_OID(1);
+	int32		id = PG_GETARG_INT32(2);
+	struct varlena *payload = PG_GETARG_VARLENA_P(3);
+	int32		version = PG_GETARG_INT32(4);
+	Relation	src;
+	Relation	rel;
+	Size		body_len;
+	Datum		saved;
+	varatt_external ve;
+	varatt_vr	v;
+	char	   *d;
+	char	   *query;
+	Oid			argtypes[2] = {INT4OID, JSONBOID};
+	Datum		values[2];
+
+	src = table_open(srcid, RowExclusiveLock);
+	rel = table_open(relid, RowExclusiveLock);
+	if (!OidIsValid(src->rd_rel->reltoastrelid) ||
+		!OidIsValid(rel->rd_rel->reltoastrelid))
+		elog(ERROR, "forge: relation has no toast relation");
+
+	body_len = VARSIZE(payload) - VARHDRSZ;
+	saved = toast_save_datum(src, PointerGetDatum(payload), NULL, 0);
+	VARATT_EXTERNAL_GET_POINTER(ve, DatumGetPointer(saved));
+
+	memset(&v, 0, sizeof(v));
+	v.vr_kind = (uint8) VR_KIND_JSONB_COLD;
+	v.vr_version = (uint8) version;		/* forced, may be unsupported */
+	v.vr_flags = 0;
+	v.vr_logical_size = (int32) (VARHDRSZ + body_len);
+	v.vr_body_size = (int32) body_len;
+	v.vr_storage_oid = src->rd_rel->reltoastrelid;
+	v.vr_valueid = ve.va_valueid;
+
+	d = palloc(VARHDRSZ_EXTERNAL + sizeof(varatt_vr));
+	SET_VARTAG_EXTERNAL(d, VARTAG_VR);
+	memcpy(VARDATA_EXTERNAL(d), &v, sizeof(v));
+
+	query = psprintf("INSERT INTO %s (id, j, n) VALUES ($1, $2, 0)",
+					 quote_qualified_identifier(
+						 get_namespace_name(RelationGetNamespace(rel)),
+						 RelationGetRelationName(rel)));
+	table_close(rel, NoLock);
+	table_close(src, NoLock);
+
+	values[0] = Int32GetDatum(id);
+	values[1] = PointerGetDatum(d);
+
+	if (SPI_connect() != SPI_OK_CONNECT)
+		elog(ERROR, "SPI_connect failed");
+	{
+		SPIPlanPtr	plan = SPI_prepare_cursor(query, 2, argtypes,
+											  CURSOR_OPT_GENERIC_PLAN);
+
+		if (plan == NULL)
+			elog(ERROR, "SPI_prepare_cursor failed: %s",
+				 SPI_result_code_string(SPI_result));
+		if (SPI_execute_plan(plan, values, NULL, false, 0) != SPI_OK_INSERT ||
+			SPI_processed != 1)
+			elog(ERROR, "forge: insert stored %llu rows, expected 1",
+				 (unsigned long long) SPI_processed);
+	}
+	SPI_finish();
+
+	PG_RETURN_OID(ve.va_valueid);
+}
