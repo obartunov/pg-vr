@@ -1,0 +1,5 @@
+# vr_admin extension
+comment = 'admin inspection and explicit re-representation for in-core VR (jsonb cold)'
+default_version = '1.0'
+module_pathname = '$libdir/vr_admin'
+relocatable = true

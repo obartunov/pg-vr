@@ -53,7 +53,8 @@ SUBDIRS = \
 		tsm_system_rows \
 		tsm_system_time \
 		unaccent	\
-		vacuumlo
+		vacuumlo \
+		vr_admin
 
 ifeq ($(with_ssl),openssl)
 SUBDIRS += pgcrypto sslinfo
