@@ -595,8 +595,10 @@ hr { border:0; border-top:1px solid var(--border); margin:14px 0; }
       "group": "Unsafe boundaries",
       "status": "pass",
       "badge": "SAFE",
-      "description": "Holder: REHOME at the single write seam; verified per row by the probe's I-A check post-REPACK (E5). VACUUM FULL/CLUSTER share the seam by construction (E6 active).",
-      "files": [],
+      "description": "Holder: REHOME at the single write seam; verified per row by the probe's I-A check post-REPACK (E5). VACUUM FULL/CLUSTER share the seam by construction (E6 active). Hard refusal backstop: heaptoast.c:199 store-gate net rejects (ERROR, ERRCODE_FEATURE_NOT_SUPPORTED) any VR whose body still references a foreign / non-local TOAST at store time, so a foreign or unlocalized locator can never be persisted.",
+      "files": [
+        "heaptoast.c"
+      ],
       "evidence": [],
       "layer": "vr"
     },
@@ -923,12 +925,12 @@ hr { border:0; border-top:1px solid var(--border); margin:14px 0; }
       "from": "N9",
       "to": "VR",
       "label": "E4",
-      "title": "rewrite KEEP (same home)",
+      "title": "rewrite KEEP (inline self-contained, no out-of-line body)",
       "status": "pass",
       "rawStatus": "green",
       "badge": "",
       "group": "Rewrite / rehome",
-      "description": "smoke regress steady-state probes (vr_storage_ok=1 across statements)",
+      "description": "KEEP = an inline self-contained VR with no out-of-line body: kept verbatim on rewrite. (Distinct from FLATTEN, which is the already-homed-here case.) smoke regress steady-state probes (vr_storage_ok=1 across statements)",
       "files": [],
       "evidence": [],
       "style": "solid",
@@ -942,12 +944,12 @@ hr { border:0; border-top:1px solid var(--border); margin:14px 0; }
       "title": "rewrite REHOME (REPACK copy path, N13=>N9)",
       "status": "pass",
       "rawStatus": "green",
-      "badge": "",
+      "badge": "SUSPECT",
       "group": "Rewrite / rehome",
-      "description": "repro_worker_capture_success.sh: 1499/1500 rows relocated, per-row I-A check vr_storage_ok=1 post-swap",
+      "description": "AUDIT-SUSPECT (VR_GRAPH_COMPILED_AUDIT_V0): this edge's title says rewrite REHOME on the N9 rewrite seam, but its evidence is the concurrent REPACK worker-capture path (vr_capture_logical_value; degrade signature vr=1499 ondisk=1), which belongs to the capture cluster (N21/E9/E14), not the non-concurrent rewrite seam. Needs split or re-evidence; do not trust as the non-concurrent rewrite REHOME. Original note: repro_worker_capture_success.sh: 1499/1500 rows relocated, per-row I-A check vr_storage_ok=1 post-swap",
       "files": [],
       "evidence": [],
-      "style": "solid",
+      "style": "dashed",
       "layer": "vr"
     },
     {
@@ -956,34 +958,42 @@ hr { border:0; border-top:1px solid var(--border); margin:14px 0; }
       "to": "VR",
       "label": "E6",
       "title": "rewrite REHOME via VACUUM FULL / CLUSTER",
-      "status": "partial",
-      "rawStatus": "active",
-      "badge": "PARTIAL",
+      "status": "pass",
+      "rawStatus": "green",
+      "badge": "",
       "group": "Rewrite / rehome",
-      "description": "source argument: single write seam heaptoast.c:199 routes all rewrites; dedicated test inventory = open gate (d) of the milestone note",
+      "description": "rewrite localizes a VR body into the rewritten relation. Single write seam (toast_helper.c:243 vr_rewrite_action -> REHOME; heaptoast.c:199 store-gate net). All four rewrite commands (VACUUM FULL, CLUSTER, ALTER rewrite, non-concurrent REPACK) funnel through cluster_rel/raw_heap_insert -> heap_toast_insert_or_update (ALTER via table_tuple_insert). Dedicated test inventory closed by t/015: each leg proves a real rewrite (relfilenode changed), vr_storage_ok=1, no orphan body, logical value preserved.",
       "files": [
-        "heaptoast.c"
+        "heaptoast.c",
+        "toast_helper.c",
+        "vr_toast.c"
       ],
-      "evidence": [],
-      "style": "dashed",
+      "evidence": [
+        "TAP 015"
+      ],
+      "style": "solid",
       "layer": "vr"
     },
     {
       "id": "E7",
       "from": "N9",
-      "to": "ORD",
+      "to": "VR",
       "label": "E7",
-      "title": "rewrite FLATTEN (foreign home)",
-      "status": "partial",
-      "rawStatus": "active",
-      "badge": "PARTIAL",
+      "title": "foreign VR localize-on-write",
+      "status": "pass",
+      "rawStatus": "green",
+      "badge": "",
       "group": "Rewrite / rehome",
-      "description": "B API vr_rewrite_action returns FLATTEN for non-home OID (vr_toast.c:157); exercised paths limited to the accepted B matrix",
+      "description": "A persistent VR descriptor that references another relation's body storage is not persisted as-is. On write the body is copied into the target relation's storage; the descriptor is rewritten to the local storage OID; the value remains VR (it is not flattened to ORD). Code path is VR_RW_REHOME (vr_toast.c:157; toast_helper.c:243). heaptoast.c:199 is the store-gate net that refuses any remaining foreign locator. Verified by t/015 (foreign-origin forge -> localize-on-write -> survives VACUUM FULL, vr_storage_ok=1).",
       "files": [
-        "vr_toast.c"
+        "vr_toast.c",
+        "toast_helper.c",
+        "heaptoast.c"
       ],
-      "evidence": [],
-      "style": "dashed",
+      "evidence": [
+        "TAP 015"
+      ],
+      "style": "solid",
       "layer": "vr"
     },
     {
@@ -1297,12 +1307,12 @@ hr { border:0; border-top:1px solid var(--border); margin:14px 0; }
       "from": "N16",
       "to": "N17",
       "label": "E20",
-      "title": "capture in walsender via future enablement",
+      "title": "reorderbuffer capture during logical decode / pgoutput guard",
       "status": "partial",
       "rawStatus": "active/partial",
       "badge": "PARTIAL",
       "group": "Logical decode / replication",
-      "description": "walsender enablement remains partial: class-S and class-U paths are covered, but general live-read semantics remain constrained; not part of v0 freeze.",
+      "description": "Capture of a VR value for logical output happens during decode, not in walsender. walsender drives the logical loop but holds no VR logic; the relevant seam is reorderbuffer.c (vr_capture_logical_value, VARTAG_VR_INMEM) and proto.c / the decode path (VARATT_IS_EXTERNAL_VR output guard). class-S and class-U paths covered; general live-read semantics remain constrained and out of v0 freeze. Status partial; not implemented here.",
       "files": [],
       "evidence": [
         "M1 class-S",
