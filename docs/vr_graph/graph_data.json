@@ -1,0 +1,1772 @@
+{
+  "meta": {
+    "title": "VR lifecycle",
+    "revision": "v1.11 / release-freeze synced",
+    "tipCommit": "a98c70fdadf1c105b9594a5a97b2a72dc9bc1dee",
+    "tipTree": "cb16a8a032a0697ed85b7a27cc6921553a482634",
+    "freezeVerdict": "production-ready v0 inside fork",
+    "blockerCount": 0,
+    "sourceDocs": [
+      "VR_LIFECYCLE_GRAPH_V1(9)(1).md",
+      "VR_V0_RELEASE_CANDIDATE_FREEZE(1).md"
+    ],
+    "modes": [
+      "vr",
+      "jsonb",
+      "overlay"
+    ],
+    "jsonbTitle": "JSONB cold — VR lifecycle (typed view)"
+  },
+  "statuses": {
+    "pass": "#3FB950",
+    "eng_v0": "#FFD43B",
+    "partial": "#FF7B00",
+    "deferred": "#7A4B16",
+    "blocker": "#F85149",
+    "design": "#A371F7"
+  },
+  "groups": [
+    {
+      "id": "Core representation",
+      "title": "Core representation",
+      "status": "pass",
+      "nodeCount": 6,
+      "edgeCount": 4,
+      "layer": "vr"
+    },
+    {
+      "id": "Read path / flatten",
+      "title": "Read path / flatten",
+      "status": "pass",
+      "nodeCount": 2,
+      "edgeCount": 2,
+      "layer": "vr"
+    },
+    {
+      "id": "Rewrite / rehome",
+      "title": "Rewrite / rehome",
+      "status": "partial",
+      "nodeCount": 2,
+      "edgeCount": 5,
+      "layer": "vr"
+    },
+    {
+      "id": "Logical decode / replication",
+      "title": "Logical decode / replication",
+      "status": "partial",
+      "nodeCount": 3,
+      "edgeCount": 8,
+      "layer": "vr"
+    },
+    {
+      "id": "Dump / restore",
+      "title": "Dump / restore",
+      "status": "pass",
+      "nodeCount": 3,
+      "edgeCount": 3,
+      "layer": "vr"
+    },
+    {
+      "id": "Upgrade / format stability",
+      "title": "Upgrade / format stability",
+      "status": "pass",
+      "nodeCount": 1,
+      "edgeCount": 1,
+      "layer": "vr"
+    },
+    {
+      "id": "Write path / storage policy",
+      "title": "Write path / storage policy",
+      "status": "pass",
+      "nodeCount": 0,
+      "edgeCount": 0,
+      "layer": "vr"
+    },
+    {
+      "id": "Admin surface",
+      "title": "Admin surface",
+      "status": "pass",
+      "nodeCount": 0,
+      "edgeCount": 0,
+      "layer": "vr"
+    },
+    {
+      "id": "Unsafe boundaries",
+      "title": "Unsafe boundaries",
+      "status": "pass",
+      "nodeCount": 6,
+      "edgeCount": 6,
+      "layer": "vr"
+    },
+    {
+      "id": "Release freeze",
+      "title": "Release freeze",
+      "status": "pass",
+      "nodeCount": 1,
+      "edgeCount": 1,
+      "layer": "vr"
+    },
+    {
+      "id": "Deferred / future",
+      "title": "Deferred / future",
+      "status": "pass",
+      "nodeCount": 0,
+      "edgeCount": 0,
+      "layer": "vr"
+    },
+    {
+      "id": "Selection",
+      "title": "Selection / policy",
+      "status": "pass",
+      "layer": "jsonb"
+    },
+    {
+      "id": "Representation",
+      "title": "Cold representation",
+      "status": "pass",
+      "layer": "jsonb"
+    },
+    {
+      "id": "Lifecycle",
+      "title": "Rewrite / capture / output",
+      "status": "pass",
+      "layer": "jsonb"
+    },
+    {
+      "id": "Admin",
+      "title": "Admin surface",
+      "status": "pass",
+      "layer": "jsonb"
+    },
+    {
+      "id": "Temperature",
+      "title": "hot/warm/cold physics (separate track)",
+      "status": "design",
+      "layer": "jsonb"
+    },
+    {
+      "id": "Deferred",
+      "title": "Deferred / future",
+      "status": "deferred",
+      "layer": "jsonb"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "C1",
+      "kind": "node",
+      "label": "C1",
+      "title": "construction gate",
+      "status": "pass",
+      "badge": "",
+      "group": "Write path / storage policy",
+      "description": "vr.c:136, vr_toast.c:340; predicate RelationIsLogicallyLogged (rel.h:721) over XLogLogicalInfoActive (xlog.h:137); EnsureLogicalDecodingEnabled arms it for any REPACK window",
+      "files": [
+        "vr.c",
+        "vr_toast.c",
+        "rel.h",
+        "xlog.h"
+      ],
+      "evidence": [],
+      "layer": "vr"
+    },
+    {
+      "id": "P1",
+      "kind": "node",
+      "label": "P1",
+      "title": "representation policy API",
+      "status": "pass",
+      "badge": "",
+      "group": "Core representation",
+      "description": "vr_rewrite_action (vr_toast.c:157; KEEP/REHOME/FLATTEN), vr_read_supported, vr_lookup_methods, vr_header_info (vr.c); per-kind methods incl. flatten (vr.c kind table); vr_capture_logical_value + vr_logical_capture_limit (PGC_SIGHUP, guc_parameters.dat:3429)",
+      "files": [
+        "vr_toast.c",
+        "vr.c"
+      ],
+      "evidence": [],
+      "layer": "vr"
+    },
+    {
+      "id": "K1",
+      "kind": "node",
+      "label": "K1",
+      "title": "simple inline kind",
+      "status": "pass",
+      "badge": "",
+      "group": "Core representation",
+      "description": "VR_KIND_TEST_VECTORS (descriptor-resident body)",
+      "files": [],
+      "evidence": [
+        "VR_KIND_TEST_VECTORS"
+      ],
+      "layer": "vr"
+    },
+    {
+      "id": "K2",
+      "kind": "node",
+      "label": "K2",
+      "title": "TOAST-backed kind",
+      "status": "pass",
+      "badge": "",
+      "group": "Core representation",
+      "description": "VR_KIND_JSONB_COLD (locator -> home toast rel)",
+      "files": [],
+      "evidence": [
+        "VR_KIND_JSONB_COLD"
+      ],
+      "layer": "vr"
+    },
+    {
+      "id": "N8",
+      "kind": "node",
+      "label": "N8",
+      "title": "detoast/flatten read",
+      "status": "pass",
+      "badge": "",
+      "group": "Read path / flatten",
+      "description": "detoast.c vr_detoast_flatten -> per-kind flatten",
+      "files": [
+        "detoast.c"
+      ],
+      "evidence": [],
+      "layer": "vr"
+    },
+    {
+      "id": "N9",
+      "kind": "node",
+      "label": "N9",
+      "title": "rewrite/rehome",
+      "status": "pass",
+      "badge": "",
+      "group": "Rewrite / rehome",
+      "description": "heaptoast.c:199 + toast_helper.c:243 — the single write seam all rewrites flow through",
+      "files": [
+        "heaptoast.c",
+        "toast_helper.c"
+      ],
+      "evidence": [],
+      "layer": "vr"
+    },
+    {
+      "id": "X1",
+      "kind": "node",
+      "label": "X1",
+      "title": "delete/cleanup",
+      "status": "pass",
+      "badge": "",
+      "group": "Rewrite / rehome",
+      "description": "vr_toast_body_delete / toast_delete_chunks_by_id (vr_toast.c); body lifetime = TOAST substrate semantics",
+      "files": [
+        "vr_toast.c"
+      ],
+      "evidence": [],
+      "layer": "vr"
+    },
+    {
+      "id": "N16",
+      "kind": "node",
+      "label": "N16",
+      "title": "reorderbuffer reassembly",
+      "status": "pass",
+      "badge": "",
+      "group": "Logical decode / replication",
+      "description": "ReorderBufferToastReplace (reorderbuffer.c:5076; early return :5092); VR branch: pass-through iff ctx->consumer_captures_vr (logical.h; single assignment repack_worker.c:280; rb->private_data sound by single allocation+assignment, logical.c:204/:209), refusal otherwise",
+      "files": [
+        "reorderbuffer.c",
+        "logical.h",
+        "repack_worker.c",
+        "logical.c"
+      ],
+      "evidence": [],
+      "layer": "vr"
+    },
+    {
+      "id": "N17",
+      "kind": "node",
+      "label": "N17",
+      "title": "logical output serialization",
+      "status": "pass",
+      "badge": "",
+      "group": "Logical decode / replication",
+      "description": "(tree 994dee95) class-U persistent VR -> LOGICALREP_COLUMN_UNCHANGED in logicalrep_write_tuple's unchanged-datum branch (proto.c:817 match, :833 marker; same shape as unchanged ONDISK toast, old images / RI FULL included); residual VR / INMEM / leak at the wire boundary -> hard ERROR backstop (proto.c:846); subscriber side reads the marker at :917",
+      "files": [
+        "proto.c"
+      ],
+      "evidence": [],
+      "layer": "vr"
+    },
+    {
+      "id": "N21",
+      "kind": "node",
+      "label": "N21",
+      "title": "REPACK concurrent capture",
+      "status": "pass",
+      "badge": "",
+      "group": "Logical decode / replication",
+      "description": "pgrepack.c repack_store_change:173+: flatten-on-capture through P1 seam, tuple re-formed, logical bytes only in spill",
+      "files": [
+        "pgrepack.c"
+      ],
+      "evidence": [],
+      "layer": "vr"
+    },
+    {
+      "id": "D1",
+      "kind": "node",
+      "label": "D1",
+      "title": "COPY TO / pg_dump",
+      "status": "pass",
+      "badge": "",
+      "group": "Dump / restore",
+      "description": "copyto.c:325 (OutputFunctionCall) / :509 (SendFunctionCall) -> detoast_attr VR arm (detoast.c:145); pg_dump dumpTableData_copy (pg_dump.c:2364, COPY TO stdout) — verified by TAP 006",
+      "files": [
+        "copyto.c",
+        "detoast.c",
+        "pg_dump.c",
+        "TAP 006"
+      ],
+      "evidence": [
+        "TAP 006"
+      ],
+      "layer": "vr"
+    },
+    {
+      "id": "D2",
+      "kind": "node",
+      "label": "D2",
+      "title": "restore / COPY FROM",
+      "status": "pass",
+      "badge": "",
+      "group": "Dump / restore",
+      "description": "input functions -> normal write path; selector decides representation anew — verified by TAP 006 (unarmed vr=0, armed vr=3)",
+      "files": [
+        "TAP 006"
+      ],
+      "evidence": [
+        "TAP 006"
+      ],
+      "layer": "vr"
+    },
+    {
+      "id": "U1",
+      "kind": "node",
+      "label": "U1",
+      "title": "pg_upgrade boundary",
+      "status": "pass",
+      "badge": "",
+      "group": "Upgrade / format stability",
+      "description": "pg_upgrade copies heap/TOAST verbatim; persistent varatt_vr format is stable across same-catversion binaries; M3 -> current verified.",
+      "files": [],
+      "evidence": [],
+      "layer": "vr"
+    },
+    {
+      "id": "LV",
+      "label": "LV",
+      "title": "logical value",
+      "group": "Core representation",
+      "status": "pass",
+      "description": "What the type means; input to construction and output of flatten/capture.",
+      "files": [],
+      "evidence": [],
+      "badge": "",
+      "layer": "vr"
+    },
+    {
+      "id": "VR",
+      "label": "VR",
+      "title": "VR representation",
+      "group": "Core representation",
+      "status": "pass",
+      "description": "Persistent physical form denoting a logical value; header includes kind, flags, logical_size.",
+      "files": [],
+      "evidence": [],
+      "badge": "",
+      "layer": "vr"
+    },
+    {
+      "id": "ORD",
+      "label": "ORD",
+      "title": "ordinary varlena/jsonb",
+      "group": "Read path / flatten",
+      "status": "pass",
+      "description": "Ordinary flattened PostgreSQL representation.",
+      "files": [],
+      "evidence": [],
+      "badge": "",
+      "layer": "vr"
+    },
+    {
+      "id": "LOGICAL",
+      "label": "bytes",
+      "title": "logical bytes only",
+      "group": "Dump / restore",
+      "status": "pass",
+      "description": "Boundary output: physical VR does not cross dump/logical replication.",
+      "files": [],
+      "evidence": [],
+      "badge": "",
+      "layer": "vr"
+    },
+    {
+      "id": "FREEZE",
+      "label": "freeze",
+      "title": "VR v0 release candidate freeze",
+      "group": "Release freeze",
+      "status": "pass",
+      "description": "release candidate freeze on origin tip a98c70fd / tree cb16a8a0; production-ready v0 inside fork; blockers none.",
+      "files": [
+        "VR_V0_RELEASE_CANDIDATE_FREEZE.md"
+      ],
+      "evidence": [
+        "VR_V0_RELEASE_CANDIDATE_FREEZE"
+      ],
+      "badge": "",
+      "layer": "vr"
+    },
+    {
+      "id": "UB1",
+      "label": "UB1",
+      "title": "Locator leak across a capture/spill/output boundary",
+      "group": "Unsafe boundaries",
+      "status": "pass",
+      "badge": "SAFE",
+      "description": "Holder: N21 flatten-before-spill (re-formed tuple carries logical bytes only; evidenced by the degrade signature vr=1499 ondisk=1) plus the consumer_captures_vr contract (logical.h comment) binding any enabling consumer. D1/D2 are covered by TAP 006; the remaining locator-leak holders for logical output are the N17 residual hard ERROR (with the class-U marker consuming unchanged persistent VR), the E21 refusal, and the stream-sourced capture discipline (E22).",
+      "files": [
+        "logical.h",
+        "TAP 006"
+      ],
+      "evidence": [
+        "TAP 006"
+      ],
+      "layer": "vr"
+    },
+    {
+      "id": "UB2",
+      "label": "UB2",
+      "title": "Stale home OID after relfilenode swap",
+      "group": "Unsafe boundaries",
+      "status": "pass",
+      "badge": "SAFE",
+      "description": "Holder: REHOME at the single write seam; verified per row by the probe's I-A check post-REPACK (E5). VACUUM FULL/CLUSTER share the seam by construction (E6 active).",
+      "files": [],
+      "evidence": [],
+      "layer": "vr"
+    },
+    {
+      "id": "UB3",
+      "label": "UB3",
+      "title": "Orphan / dangling body",
+      "group": "Unsafe boundaries",
+      "status": "pass",
+      "badge": "SAFE",
+      "description": "Holder: substrate semantics (chunks die with the owning toast relation / toast vacuum) plus flatten-on-capture (a captured row references no old body after apply). Old-relation drop at swap removes the orphan class for REPACK. Crash recovery needs no VR-specific handling: bodies are TOAST chunks recovered by the normal TOAST/WAL path.",
+      "files": [],
+      "evidence": [],
+      "layer": "vr"
+    },
+    {
+      "id": "UB4",
+      "label": "UB4",
+      "title": "Physical descriptor in dump/COPY/logical output",
+      "group": "Unsafe boundaries",
+      "status": "pass",
+      "badge": "SAFE",
+      "description": "Holder set for logical output (M2 state): the N17 class-U marker consumes unchanged persistent VR (LOGICALREP_COLUMN_UNCHANGED, no payload); the residual N17 hard ERROR backstops any leak / transient INMEM that approaches the wire; the E21 refusal blocks datum-printing consumers from live-reading VR bodies under historic snapshots; the E22 stream-sourced capture discipline converts class-S VR to ordinary logical bytes before the writer. For dump/COPY: the N8 flatten inside detoast_attr - evidenced by TAP 006 round trips on both COPY formats and both dump formats (the v1.0 gap at this boundary is closed).",
+      "files": [
+        "TAP 006"
+      ],
+      "evidence": [
+        "TAP 006"
+      ],
+      "layer": "vr"
+    },
+    {
+      "id": "UB5",
+      "label": "UB5",
+      "title": "Unbounded materialization on capture paths",
+      "group": "Unsafe boundaries",
+      "status": "pass",
+      "badge": "SAFE",
+      "description": "Holder: vr_logical_capture_limit checked before any body access, per value, in the one shared seam; worker-side refusal and retry evidenced (E9/E10 threshold runs). Lifting the bound = streaming reconstruction, out of scope by accepted decision.",
+      "files": [],
+      "evidence": [],
+      "layer": "vr"
+    },
+    {
+      "id": "UB6",
+      "label": "UB6",
+      "title": "visible degradation / admin visibility",
+      "group": "Unsafe boundaries",
+      "status": "pass",
+      "badge": "SAFE",
+      "description": "Logical value is preserved; physical VR may degrade to ordinary on apply/restore; vr_inspect makes mixed representation visible.",
+      "files": [
+        "pgrepack.c"
+      ],
+      "evidence": [],
+      "layer": "vr"
+    },
+    {
+      "id": "A1",
+      "kind": "node",
+      "label": "A1",
+      "title": "admin surface",
+      "status": "pass",
+      "badge": "",
+      "group": "Admin surface",
+      "description": "typed inspection + admin conversion surface: contrib/vr_admin (sanctioned v0, not core catalog). vr_inspect(regclass) per-column counts + storage health; vr_rerepresent_column(regclass,name) explicit conversion; vr_force_fresh internal.",
+      "files": [
+        "contrib/vr_admin/vr_admin.c",
+        "contrib/vr_admin/vr_admin--1.0.sql"
+      ],
+      "evidence": [
+        "contrib/vr_admin/t/001_vr_inspect.pl (14 asserts)"
+      ],
+      "layer": "vr"
+    },
+    {
+      "id": "J:JV",
+      "kind": "node",
+      "label": "JV",
+      "title": "jsonb value",
+      "status": "pass",
+      "group": "Selection",
+      "description": "a jsonb Datum on the ordinary write path; candidate for cold representation.",
+      "files": [],
+      "evidence": [],
+      "layer": "jsonb",
+      "derivesFrom": "LV"
+    },
+    {
+      "id": "J:POL",
+      "kind": "node",
+      "label": "POL",
+      "title": "vr_jsonb_cold policy",
+      "status": "pass",
+      "group": "Selection",
+      "description": "durable per-column attribute option; marks a jsonb column for cold VR. survives schema dump/restore.",
+      "files": [
+        "src/backend/access/common/reloptions.c"
+      ],
+      "evidence": [
+        "t/013_attribute_storage_policy (12)"
+      ],
+      "layer": "jsonb",
+      "derivesFrom": "P1"
+    },
+    {
+      "id": "J:SEL",
+      "kind": "node",
+      "label": "SEL",
+      "title": "in-core selector",
+      "status": "pass",
+      "group": "Selection",
+      "description": "builtin first, hook fallback; jsonb only, VR_KIND_JSONB_COLD only, size floor VR_JSONB_COLD_MIN from TOAST geometry.",
+      "files": [
+        "src/backend/access/common/toast_helper.c",
+        "src/backend/access/common/vr.c"
+      ],
+      "evidence": [
+        "t/014_incore_selector (15)"
+      ],
+      "layer": "jsonb",
+      "derivesFrom": "C1"
+    },
+    {
+      "id": "J:FLOOR",
+      "kind": "node",
+      "label": "FLOOR",
+      "title": "size floor VR_JSONB_COLD_MIN",
+      "status": "pass",
+      "group": "Selection",
+      "description": "below the floor the value stays ordinary; floor derived from TOAST chunk geometry, not a magic constant.",
+      "files": [
+        "src/include/access/value_representation.h"
+      ],
+      "evidence": [
+        "t/014 case 3b lower-bound"
+      ],
+      "layer": "jsonb",
+      "derivesFrom": "P1"
+    },
+    {
+      "id": "J:K2",
+      "kind": "node",
+      "label": "K2",
+      "title": "VR_KIND_JSONB_COLD",
+      "status": "pass",
+      "group": "Representation",
+      "description": "the one accepted v0 VR kind: whole jsonb body relocated to the home TOAST relation; descriptor holds the locator.",
+      "files": [
+        "src/backend/access/common/vr.c"
+      ],
+      "evidence": [
+        "vr_jsonb_cold_smoke regress"
+      ],
+      "layer": "jsonb",
+      "derivesFrom": "K2"
+    },
+    {
+      "id": "J:COLD",
+      "kind": "node",
+      "label": "COLD",
+      "title": "cold body @ home TOAST",
+      "status": "pass",
+      "group": "Representation",
+      "description": "physical cold payload in the owning relation's toast relation; lifetime = TOAST substrate semantics.",
+      "files": [
+        "src/backend/access/common/vr_toast.c"
+      ],
+      "evidence": [],
+      "layer": "jsonb",
+      "derivesFrom": "K2"
+    },
+    {
+      "id": "J:FLAT",
+      "kind": "node",
+      "label": "FLAT",
+      "title": "flattened jsonb",
+      "status": "pass",
+      "group": "Representation",
+      "description": "detoast/flatten reconstructs the canonical jsonb for any reader; self-describing, no extension cooperation.",
+      "files": [
+        "src/backend/access/common/detoast.c"
+      ],
+      "evidence": [
+        "N8 vr_detoast_flatten"
+      ],
+      "layer": "jsonb",
+      "derivesFrom": "N8"
+    },
+    {
+      "id": "J:A1",
+      "kind": "node",
+      "label": "A1",
+      "title": "admin surface",
+      "status": "pass",
+      "group": "Admin",
+      "description": "contrib/vr_admin: vr_inspect(regclass) per-column cold/ordinary/below-floor counts + storage health; vr_rerepresent_column explicit conversion.",
+      "files": [
+        "contrib/vr_admin/vr_admin.c"
+      ],
+      "evidence": [
+        "contrib/vr_admin/t/001 (14)"
+      ],
+      "layer": "jsonb",
+      "derivesFrom": "A1"
+    },
+    {
+      "id": "J:HOT",
+      "kind": "node",
+      "label": "HOT",
+      "title": "hot: inline parent",
+      "status": "design",
+      "group": "Temperature",
+      "badge": "SEPARATE TRACK",
+      "description": "three-temperature model (jbtl-public-clean research track, NOT this fork's v0): hot = keys kept inline in the parent tuple.",
+      "files": [],
+      "evidence": [
+        "jbtl-public-clean w3-* branches"
+      ],
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:WARM",
+      "kind": "node",
+      "label": "WARM",
+      "title": "warm: first TOAST chunks",
+      "status": "design",
+      "group": "Temperature",
+      "badge": "SEPARATE TRACK",
+      "description": "warm = leading TOAST chunks fetched on partial reads. Design/bench track, not part of VR v0 freeze.",
+      "files": [],
+      "evidence": [
+        "jsonb-p1-bench-suite"
+      ],
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:CTAIL",
+      "kind": "node",
+      "label": "CTAIL",
+      "title": "cold: relocated tail",
+      "status": "design",
+      "group": "Temperature",
+      "badge": "SEPARATE TRACK",
+      "description": "cold = relocated tail span (shape-C requires raw-span memcpy: standalone-rebuilt children are NOT byte-identical to their in-parent span). Research track.",
+      "files": [],
+      "evidence": [],
+      "layer": "jsonb"
+    },
+    {
+      "id": "UB7",
+      "kind": "node",
+      "label": "UB7",
+      "title": "decoded-WAL implies gated construction (I-B)",
+      "status": "pass",
+      "badge": "",
+      "group": "Unsafe boundaries",
+      "description": "Holder: C1. Any WAL range a logical slot can decode must not contain freshly-constructed VR the consumer cannot interpret; construction is refused inside an active logical-decoding window. This is where WAL safety lives in the VR line (there is no separate WAL pipeline). Crash recovery itself is subsumed by substrate semantics (UB3): VR bodies are ordinary TOAST chunks and inherit TOAST/WAL crash-safety; the VR descriptor adds no recovery-specific path.",
+      "files": [
+        "src/backend/access/common/vr.c",
+        "src/include/access/xlog.h"
+      ],
+      "evidence": [
+        "t/001_logical_gate (4)",
+        "t/005_logical_decoding_refusal (4)"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "E1",
+      "from": "LV",
+      "to": "C1",
+      "label": "E1",
+      "title": "construct K1/K2 on non-logically-logged rel (C1 pass)",
+      "status": "pass",
+      "rawStatus": "green",
+      "badge": "",
+      "group": "Write path / storage policy",
+      "description": "A+capture branches; vr_test_vectors_smoke, vr_jsonb_cold_smoke regress (arm+insert, probe vr=N)",
+      "files": [],
+      "evidence": [],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E2",
+      "from": "C1",
+      "to": "VR",
+      "label": "E2",
+      "title": "construct under logical logging (C1 refuse)",
+      "status": "pass",
+      "rawStatus": "refused",
+      "badge": "REFUSED",
+      "group": "Write path / storage policy",
+      "description": "TAP 001 (logical cluster); repro_chunk_slice_gate_refusal.sh — armed INSERT in a REPACK window fails with the gate error, REPACK unaffected",
+      "files": [
+        "TAP 001"
+      ],
+      "evidence": [
+        "TAP 001"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E3",
+      "from": "VR",
+      "to": "N8",
+      "label": "E3",
+      "title": "read/flatten any reader (N8)",
+      "status": "pass",
+      "rawStatus": "green",
+      "badge": "",
+      "group": "Read path / flatten",
+      "description": "both smoke suites: roundtrip equality, k1 extraction; capture fidelity capture(j)=j",
+      "files": [],
+      "evidence": [],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E4",
+      "from": "N9",
+      "to": "VR",
+      "label": "E4",
+      "title": "rewrite KEEP (same home)",
+      "status": "pass",
+      "rawStatus": "green",
+      "badge": "",
+      "group": "Rewrite / rehome",
+      "description": "smoke regress steady-state probes (vr_storage_ok=1 across statements)",
+      "files": [],
+      "evidence": [],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E5",
+      "from": "N9",
+      "to": "VR",
+      "label": "E5",
+      "title": "rewrite REHOME (REPACK copy path, N13=>N9)",
+      "status": "pass",
+      "rawStatus": "green",
+      "badge": "",
+      "group": "Rewrite / rehome",
+      "description": "repro_worker_capture_success.sh: 1499/1500 rows relocated, per-row I-A check vr_storage_ok=1 post-swap",
+      "files": [],
+      "evidence": [],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E6",
+      "from": "N9",
+      "to": "VR",
+      "label": "E6",
+      "title": "rewrite REHOME via VACUUM FULL / CLUSTER",
+      "status": "partial",
+      "rawStatus": "active",
+      "badge": "PARTIAL",
+      "group": "Rewrite / rehome",
+      "description": "source argument: single write seam heaptoast.c:199 routes all rewrites; dedicated test inventory = open gate (d) of the milestone note",
+      "files": [
+        "heaptoast.c"
+      ],
+      "evidence": [],
+      "style": "dashed",
+      "layer": "vr"
+    },
+    {
+      "id": "E7",
+      "from": "N9",
+      "to": "ORD",
+      "label": "E7",
+      "title": "rewrite FLATTEN (foreign home)",
+      "status": "partial",
+      "rawStatus": "active",
+      "badge": "PARTIAL",
+      "group": "Rewrite / rehome",
+      "description": "B API vr_rewrite_action returns FLATTEN for non-home OID (vr_toast.c:157); exercised paths limited to the accepted B matrix",
+      "files": [
+        "vr_toast.c"
+      ],
+      "evidence": [],
+      "style": "dashed",
+      "layer": "vr"
+    },
+    {
+      "id": "E8",
+      "from": "VR",
+      "to": "X1",
+      "label": "E8",
+      "title": "delete/cleanup (X1)",
+      "status": "pass",
+      "rawStatus": "green",
+      "badge": "",
+      "group": "Rewrite / rehome",
+      "description": "0002 trio accepted in capture lineage; substrate semantics: chunks die with toast vacuum; B audit doc",
+      "files": [],
+      "evidence": [],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E9",
+      "from": "VR",
+      "to": "N21",
+      "label": "E9",
+      "title": "N21 no-chunk capture (same-body / non-toasting other-column UPDATE, DELETE)",
+      "status": "pass",
+      "rawStatus": "green-c",
+      "badge": "GREEN-C",
+      "group": "Logical decode / replication",
+      "description": "capture branch @ origin; TAP 002; repro_worker_capture_success.sh (vr=1499 ondisk=1 = seam fired); threshold: TAP 003 + repro_worker_capture_limit.sh (limit=0 -> clean worker failure with CONTEXT in change callback; reload -> retry OK)",
+      "files": [
+        "TAP 002",
+        "TAP 003"
+      ],
+      "evidence": [
+        "TAP 002",
+        "TAP 003"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E10",
+      "from": "VR",
+      "to": "N16",
+      "label": "E10",
+      "title": "N16 mixed slice (chunk-writing other-column UPDATE, VR untouched)",
+      "status": "pass",
+      "rawStatus": "green-c",
+      "badge": "GREEN-C",
+      "group": "Logical decode / replication",
+      "description": "mixed branch @ origin 3dcb11c; H1 pre-fix repro (refusal) vs post-fix (REPACK OK); TAP 004; repro_mixed_capture_evidence.sh (vr=1499 ondisk=1, fidelity both columns); repro_mixed_threshold_refusal.sh (limit=0 fails cleanly, retry OK)",
+      "files": [
+        "TAP 004"
+      ],
+      "evidence": [
+        "TAP 004"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E11",
+      "from": "N16",
+      "to": "LOGICAL",
+      "label": "E11",
+      "title": "N16 under general logical decoding",
+      "status": "pass",
+      "rawStatus": "refused",
+      "badge": "REFUSED",
+      "group": "Logical decode / replication",
+      "description": "TAP 005: test_decoding slot on the mixed exposure fails with the exact N16 message, twice (deterministic); flag default-false by palloc0_object (logical.c:164), single assignment site repack_worker.c:280",
+      "files": [
+        "TAP 005",
+        "logical.c",
+        "repack_worker.c"
+      ],
+      "evidence": [
+        "TAP 005"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E12",
+      "from": "N17",
+      "to": "LOGICAL",
+      "label": "E12",
+      "title": "N17 logical output of VR",
+      "status": "pass",
+      "rawStatus": "green-c (class-U marker only)",
+      "badge": "GREEN-C",
+      "group": "Logical decode / replication",
+      "description": "M2: the unchanged-datum branch of logicalrep_write_tuple also matches a persistent VR pointer and emits LOGICALREP_COLUMN_UNCHANGED - identical shape to unchanged ONDISK toast, old images included; the residual VR ERROR below remains the wire backstop (INMEM/leak = hard ERROR); TAP 007 pgoutput leg (marker success) + TAP 009",
+      "files": [
+        "TAP 007",
+        "TAP 009"
+      ],
+      "evidence": [
+        "TAP 007",
+        "TAP 009"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E23",
+      "from": "N16",
+      "to": "N17",
+      "label": "E23",
+      "title": "class-U pgoutput pipeline: N16 leave-in-place (consumer_marks_unchanged_vr, single assignment pgoutput.c:464) + N17 marker",
+      "status": "pass",
+      "rawStatus": "green-c (pgoutput only)",
+      "badge": "GREEN-C",
+      "group": "Logical decode / replication",
+      "description": "TAP 009 pub/sub: subscriber pre-seeded with a LOCAL VR retains vr=1 through pure and mixed class-U applies; logical equality holds; test_decoding on the same exposure keeps the N16 refusal; no cross-wire representation identity",
+      "files": [
+        "TAP 009",
+        "pgoutput.c"
+      ],
+      "evidence": [
+        "TAP 009"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E13",
+      "from": "C1",
+      "to": "N16",
+      "label": "E13",
+      "title": "chunk slice proper (INSERT-with-VR, body-reconstructing UPDATE in a decoded window)",
+      "status": "pass",
+      "rawStatus": "refused",
+      "badge": "REFUSED",
+      "group": "Logical decode / replication",
+      "description": "unreachable by I-B: C1 fires first (E2 evidence); N16/N17 are unreached backstops for it",
+      "files": [],
+      "evidence": [],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E14",
+      "from": "VR",
+      "to": "N21",
+      "label": "E14",
+      "title": "capture above threshold",
+      "status": "pass",
+      "rawStatus": "refused",
+      "badge": "REFUSED",
+      "group": "Logical decode / replication",
+      "description": "deterministic FEATURE_NOT_SUPPORTED before body access (vr.c seam); TAP 003/004-adjacent limit runs; exact byte counts in errdetail",
+      "files": [
+        "vr.c",
+        "TAP 003"
+      ],
+      "evidence": [
+        "TAP 003/004-adjacent"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E15",
+      "from": "D1",
+      "to": "LOGICAL",
+      "label": "E15",
+      "title": "D1 COPY TO text/binary of VR",
+      "status": "pass",
+      "rawStatus": "green-c",
+      "badge": "GREEN-C",
+      "group": "Dump / restore",
+      "description": "vr-dump-copy-boundary-v0; TAP 006: round-trip logical equality (text and binary), no non-printable descriptor bytes in text output; leak proof = descriptor bytes would break JSON syntax / binary recv format",
+      "files": [
+        "TAP 006"
+      ],
+      "evidence": [
+        "TAP 006"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E16",
+      "from": "D1",
+      "to": "LOGICAL",
+      "label": "E16",
+      "title": "D1 pg_dump text/custom",
+      "status": "pass",
+      "rawStatus": "green-c",
+      "badge": "GREEN-C",
+      "group": "Dump / restore",
+      "description": "TAP 006: plain dump restored via psql and custom via pg_restore, logical values preserved, dump file printable-clean",
+      "files": [
+        "TAP 006"
+      ],
+      "evidence": [
+        "TAP 006"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E17",
+      "from": "D2",
+      "to": "VR",
+      "label": "E17",
+      "title": "D2 restore / COPY FROM into armed and unarmed targets",
+      "status": "pass",
+      "rawStatus": "green-c",
+      "badge": "GREEN-C",
+      "group": "Dump / restore",
+      "description": "TAP 006: unarmed restore degrades visibly (probe vr=0); armed restoring session reconstructs VR (vr=3) - degradation is policy, not loss; logical value preserved in every case",
+      "files": [
+        "TAP 006"
+      ],
+      "evidence": [
+        "TAP 006"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E18",
+      "from": "VR",
+      "to": "U1",
+      "label": "E18",
+      "title": "U1 pg_upgrade same/cross version",
+      "status": "pass",
+      "rawStatus": "open",
+      "badge": "DEFERRED",
+      "group": "Upgrade / format stability",
+      "description": "same-version and cross-version same-catversion pg_upgrade verified; VR readable without policy, byte/logical equality preserved.",
+      "files": [
+        "pg_upgrade",
+        "varatt.h"
+      ],
+      "evidence": [
+        "VR_U1_BINARY_UPGRADE_SMOKE_V0",
+        "VR_PRODUCTION_COVERAGE_CLOSURE_V0",
+        "VR_V0_RELEASE_CANDIDATE_FREEZE"
+      ],
+      "style": "dotted",
+      "kind": "upgrade",
+      "layer": "vr"
+    },
+    {
+      "id": "E19",
+      "from": "N16",
+      "to": "LOGICAL",
+      "label": "E19",
+      "title": "INMEM transient form as capture carrier",
+      "status": "pass",
+      "rawStatus": "green-c",
+      "badge": "GREEN-C",
+      "group": "Logical decode / replication",
+      "description": "vr-logical-replication-m1: vr_make_inmemory implemented (stream-size semantics match the persistent field, so the seam threshold runs BEFORE decompression); INMEM arms of vr_body_size/vr_body_read mirror the persistent logical-space contract; storage still hard-refused by fill_val (TAP 008 asserts the exact message); transient-only by construction",
+      "files": [
+        "TAP 008"
+      ],
+      "evidence": [
+        "TAP 008"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E22",
+      "from": "N16",
+      "to": "LOGICAL",
+      "label": "E22",
+      "title": "N16 class-S stream-sourced capture (body chunks in the decoded txn)",
+      "status": "pass",
+      "rawStatus": "green-c",
+      "badge": "GREEN-C",
+      "group": "Logical decode / replication",
+      "description": "M1 branch: locator valueid found in toast_hash -> reassemble from decoded chunks only (ERRCODE_DATA_CORRUPTED on overflow/incomplete) -> INMEM -> seam -> ent->reconstructed (existing ToastReset lifetime) -> INDIRECT re-form; TAP 008 end-to-end via forged class-S txns (REHOME write edge, no C1 relaxation): decode prints the logical value, threshold refusal retryable, class-U/E21 regression intact; kind-agnostic (zero kind knowledge in reorderbuffer, grep-proven)",
+      "files": [
+        "TAP 008"
+      ],
+      "evidence": [
+        "TAP 008"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E21",
+      "from": "N8",
+      "to": "LOGICAL",
+      "label": "E21",
+      "title": "N8 live-read flatten inside a logical decoding context (datum-printing consumers: test_decoding, SQL slot, third-party plugins)",
+      "status": "pass",
+      "rawStatus": "refused",
+      "badge": "REFUSED",
+      "group": "Read path / flatten",
+      "description": "vr-decode-flatten-guard-v0: historic-snapshot guard as the FIRST action of vr_detoast_flatten, before descriptor parse; TAP 007 (deterministic refusal twice, errdetail discriminates from N16; pgoutput/N17 distinct refusal on the same change); before/after repro pair repro_p2c_slot_live_flatten.sh / repro_p2c_guard_refusal.sh; REPACK unaffected by construction (seam never enters the funnel; TAP 002/004 green on the guarded binary)",
+      "files": [
+        "TAP 007",
+        "TAP 002"
+      ],
+      "evidence": [
+        "TAP 007",
+        "TAP 002/004"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E20",
+      "from": "N16",
+      "to": "N17",
+      "label": "E20",
+      "title": "capture in walsender via future enablement",
+      "status": "partial",
+      "rawStatus": "active/partial",
+      "badge": "PARTIAL",
+      "group": "Logical decode / replication",
+      "description": "walsender enablement remains partial: class-S and class-U paths are covered, but general live-read semantics remain constrained; not part of v0 freeze.",
+      "files": [],
+      "evidence": [
+        "M1 class-S",
+        "M2 class-U",
+        "M3 C1 relaxation",
+        "VR_V0_RELEASE_CANDIDATE_FREEZE"
+      ],
+      "style": "dashed",
+      "layer": "vr"
+    },
+    {
+      "id": "FZ1",
+      "from": "FREEZE",
+      "to": "A1",
+      "label": "freeze",
+      "title": "release candidate includes admin surface",
+      "status": "pass",
+      "group": "Release freeze",
+      "description": "freeze document records accepted capabilities, green matrix, limitations, blockers=0, and future stop conditions.",
+      "files": [
+        "VR_V0_RELEASE_CANDIDATE_FREEZE.md"
+      ],
+      "evidence": [
+        "VR_V0_RELEASE_CANDIDATE_FREEZE"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "UHE1",
+      "from": "UB1",
+      "to": "VR",
+      "label": "UB1",
+      "title": "unsafe boundary 1 holder",
+      "status": "pass",
+      "group": "Unsafe boundaries",
+      "description": "Safety boundary documented in lifecycle graph.",
+      "files": [
+        "VR_LIFECYCLE_GRAPH_V1.md"
+      ],
+      "evidence": [
+        "VR_LIFECYCLE_GRAPH_V1"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "UHE2",
+      "from": "UB2",
+      "to": "VR",
+      "label": "UB2",
+      "title": "unsafe boundary 2 holder",
+      "status": "pass",
+      "group": "Unsafe boundaries",
+      "description": "Safety boundary documented in lifecycle graph.",
+      "files": [
+        "VR_LIFECYCLE_GRAPH_V1.md"
+      ],
+      "evidence": [
+        "VR_LIFECYCLE_GRAPH_V1"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "UHE3",
+      "from": "UB3",
+      "to": "VR",
+      "label": "UB3",
+      "title": "unsafe boundary 3 holder",
+      "status": "pass",
+      "group": "Unsafe boundaries",
+      "description": "Safety boundary documented in lifecycle graph.",
+      "files": [
+        "VR_LIFECYCLE_GRAPH_V1.md"
+      ],
+      "evidence": [
+        "VR_LIFECYCLE_GRAPH_V1"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "UHE4",
+      "from": "UB4",
+      "to": "VR",
+      "label": "UB4",
+      "title": "unsafe boundary 4 holder",
+      "status": "pass",
+      "group": "Unsafe boundaries",
+      "description": "Safety boundary documented in lifecycle graph.",
+      "files": [
+        "VR_LIFECYCLE_GRAPH_V1.md"
+      ],
+      "evidence": [
+        "VR_LIFECYCLE_GRAPH_V1"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "UHE5",
+      "from": "UB5",
+      "to": "VR",
+      "label": "UB5",
+      "title": "unsafe boundary 5 holder",
+      "status": "pass",
+      "group": "Unsafe boundaries",
+      "description": "Safety boundary documented in lifecycle graph.",
+      "files": [
+        "VR_LIFECYCLE_GRAPH_V1.md"
+      ],
+      "evidence": [
+        "VR_LIFECYCLE_GRAPH_V1"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "UHE6",
+      "from": "UB6",
+      "to": "VR",
+      "label": "UB6",
+      "title": "visible degradation / admin visibility",
+      "status": "pass",
+      "group": "Unsafe boundaries",
+      "description": "visibility holder for representation degradation; vr_inspect exposes mixed state; value preserved.",
+      "files": [
+        "VR_LIFECYCLE_GRAPH_V1.md"
+      ],
+      "evidence": [
+        "VR_LIFECYCLE_GRAPH_V1"
+      ],
+      "style": "solid",
+      "kind": "safety",
+      "layer": "vr"
+    },
+    {
+      "id": "E24",
+      "from": "ORD",
+      "to": "VR",
+      "label": "E24",
+      "title": "ordinary write under VR policy -> VR (production write path)",
+      "status": "pass",
+      "rawStatus": "green",
+      "badge": "",
+      "group": "Write path / storage policy",
+      "description": "in-core selector on the ordinary INSERT/UPDATE write path: builtin selector first (jsonb only, VR_KIND_JSONB_COLD, size floor VR_JSONB_COLD_MIN), extension hook fallback. Durable per-column vr_jsonb_cold policy. vr_jsonb_cold_smoke t/013 (12), t/014 (15).",
+      "files": [
+        "src/backend/access/common/toast_helper.c",
+        "src/backend/access/common/vr.c"
+      ],
+      "evidence": [
+        "t/013_attribute_storage_policy (12)",
+        "t/014_incore_selector (15)"
+      ],
+      "style": "solid",
+      "layer": "vr"
+    },
+    {
+      "id": "E26",
+      "from": "A1",
+      "to": "VR",
+      "label": "E26",
+      "title": "explicit admin re-representation -> VR",
+      "status": "eng_v0",
+      "rawStatus": "eng",
+      "badge": "ACCEPTED v0",
+      "group": "Admin surface",
+      "description": "vr_rerepresent_column drives existing ordinary rows through the ordinary write path + E24 selector; vr_force_fresh = pg_detoast_datum_copy (shape-exact). Single transaction, no batching; RowExclusiveLock; idempotent; fail-closed on interrupt. WAL ~= bulk rebuild UPDATE (~1.04x). Engineering v0, final placement in contrib/vr_admin. VACUUM FULL still does NOT convert (E25 stays rejected).",
+      "files": [
+        "contrib/vr_admin/vr_admin.c"
+      ],
+      "evidence": [
+        "contrib/vr_admin/t/001_vr_inspect.pl (14)"
+      ],
+      "style": "dashed",
+      "layer": "vr"
+    },
+    {
+      "id": "E25",
+      "from": "ORD",
+      "to": "ORD",
+      "label": "E25",
+      "title": "automatic ordinary -> VR on heap rewrite",
+      "status": "deferred",
+      "rawStatus": "deferred",
+      "badge": "DEFERRED",
+      "group": "Deferred / future",
+      "description": "VACUUM FULL / CLUSTER / ALTER rewrite would convert ordinary rows to VR automatically. Rejected for v0: rewrite paths preserve existing representation; conversion is explicit only (E26). Not implemented.",
+      "files": [],
+      "evidence": [],
+      "style": "dotted",
+      "layer": "vr"
+    },
+    {
+      "id": "J:J1",
+      "from": "J:JV",
+      "to": "J:POL",
+      "label": "J1",
+      "title": "column marked vr_jsonb_cold",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Selection",
+      "description": "durable per-column policy recorded as an attribute storage option.",
+      "files": [
+        "src/backend/access/common/reloptions.c"
+      ],
+      "evidence": [
+        "t/013 (12)"
+      ],
+      "style": "solid",
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:J2",
+      "from": "J:POL",
+      "to": "J:SEL",
+      "label": "J2",
+      "title": "write path consults selector",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Selection",
+      "description": "ordinary INSERT/UPDATE on a marked jsonb column runs the in-core selector.",
+      "files": [
+        "src/backend/access/common/toast_helper.c"
+      ],
+      "evidence": [
+        "t/014 (15)"
+      ],
+      "style": "solid",
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:J3",
+      "from": "J:SEL",
+      "to": "J:FLOOR",
+      "label": "J3",
+      "title": "selector checks size floor",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Selection",
+      "description": "value below VR_JSONB_COLD_MIN stays ordinary; at/above floor becomes cold.",
+      "files": [
+        "src/include/access/value_representation.h"
+      ],
+      "evidence": [
+        "t/014 case 3b"
+      ],
+      "style": "solid",
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:J4",
+      "from": "J:FLOOR",
+      "to": "J:K2",
+      "label": "J4",
+      "title": "at/above floor -> cold kind",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Representation",
+      "description": "selector constructs VR_KIND_JSONB_COLD.",
+      "files": [
+        "src/backend/access/common/vr.c"
+      ],
+      "evidence": [],
+      "style": "solid",
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:J4b",
+      "from": "J:FLOOR",
+      "to": "J:JV",
+      "label": "J4b",
+      "title": "below floor -> stays ordinary",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Selection",
+      "description": "legitimately-ordinary jsonb; not converted.",
+      "files": [],
+      "evidence": [
+        "t/014 case 3b lower-bound"
+      ],
+      "style": "solid",
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:J5",
+      "from": "J:K2",
+      "to": "J:COLD",
+      "label": "J5",
+      "title": "body relocated to home TOAST",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Representation",
+      "description": "cold payload stored in the owning relation's toast relation; descriptor keeps the locator.",
+      "files": [
+        "src/backend/access/common/vr_toast.c"
+      ],
+      "evidence": [],
+      "style": "solid",
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:J6",
+      "from": "J:COLD",
+      "to": "J:FLAT",
+      "label": "J6",
+      "title": "read / flatten (N8)",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Representation",
+      "description": "any reader detoasts the cold body back to canonical jsonb.",
+      "files": [
+        "src/backend/access/common/detoast.c"
+      ],
+      "evidence": [
+        "t/007 decode_flatten_guard (8)"
+      ],
+      "style": "solid",
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:J7",
+      "from": "J:COLD",
+      "to": "J:COLD",
+      "label": "J7",
+      "title": "rewrite KEEP / REHOME (VACUUM FULL, CLUSTER, REPACK)",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Lifecycle",
+      "description": "rewrite paths preserve the cold representation (keep same home or rehome on copy); no auto-flatten.",
+      "files": [
+        "src/backend/access/common/vr_toast.c"
+      ],
+      "evidence": [
+        "t/011 repack_organic_vr (16)"
+      ],
+      "style": "solid",
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:J8",
+      "from": "J:COLD",
+      "to": "J:FLAT",
+      "label": "J8",
+      "title": "capture for logical / REPACK (N16/N21)",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Lifecycle",
+      "description": "capture seam carries the logical jsonb bytes only; physical cold body never crosses the logical/dump boundary.",
+      "files": [
+        "src/backend/replication/logical/reorderbuffer.c",
+        "bin/pgrepack/pgrepack.c"
+      ],
+      "evidence": [
+        "t/008 class_s (14)",
+        "t/009 class_u (14)"
+      ],
+      "style": "solid",
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:J9",
+      "from": "J:FLAT",
+      "to": "J:COLD",
+      "label": "J9",
+      "title": "restore / apply re-selects representation (D2)",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Lifecycle",
+      "description": "receiving side re-runs its own policy; may be cold (armed) or ordinary (unarmed). value preserved either way.",
+      "files": [],
+      "evidence": [
+        "t/006 dump_copy_boundary (20)"
+      ],
+      "style": "solid",
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:J10",
+      "from": "J:JV",
+      "to": "J:A1",
+      "label": "J10",
+      "title": "admin inspects mixed representation",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Admin",
+      "description": "vr_inspect reports cold / ordinary / below-floor / would-convert per column.",
+      "files": [
+        "contrib/vr_admin/vr_admin.c"
+      ],
+      "evidence": [
+        "t/001 (14)"
+      ],
+      "style": "solid",
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:J11",
+      "from": "J:A1",
+      "to": "J:COLD",
+      "label": "J11",
+      "title": "explicit re-representation -> cold",
+      "status": "eng_v0",
+      "rawStatus": "eng",
+      "badge": "ACCEPTED v0",
+      "group": "Admin",
+      "description": "vr_rerepresent_column converts existing ordinary jsonb rows intentionally through the write path + selector. Engineering v0.",
+      "files": [
+        "contrib/vr_admin/vr_admin.c"
+      ],
+      "evidence": [
+        "t/001 (14)"
+      ],
+      "style": "dashed",
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:J12",
+      "from": "J:JV",
+      "to": "J:COLD",
+      "label": "J12",
+      "title": "automatic ordinary -> cold on rewrite",
+      "status": "deferred",
+      "rawStatus": "deferred",
+      "badge": "DEFERRED",
+      "group": "Deferred",
+      "description": "rejected for v0: rewrite preserves representation; conversion is explicit only (J11). Not implemented.",
+      "files": [],
+      "evidence": [],
+      "style": "dotted",
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:T1",
+      "from": "J:HOT",
+      "to": "J:WARM",
+      "label": "T1",
+      "title": "hot -> warm boundary",
+      "status": "design",
+      "rawStatus": "design",
+      "badge": "SEPARATE TRACK",
+      "group": "Temperature",
+      "description": "three-temperature physics in jbtl-public-clean, not in the VR v0 freeze line. Shown for context only.",
+      "files": [],
+      "evidence": [],
+      "style": "dotted",
+      "layer": "jsonb"
+    },
+    {
+      "id": "J:T2",
+      "from": "J:WARM",
+      "to": "J:CTAIL",
+      "label": "T2",
+      "title": "warm -> cold tail (shape-C raw span)",
+      "status": "design",
+      "rawStatus": "design",
+      "badge": "SEPARATE TRACK",
+      "group": "Temperature",
+      "description": "relocated tail requires raw-span memcpy (standalone-rebuilt children not byte-identical to in-parent span). Research track.",
+      "files": [],
+      "evidence": [],
+      "style": "dotted",
+      "layer": "jsonb"
+    },
+    {
+      "id": "D:J:JV",
+      "from": "J:JV",
+      "to": "LV",
+      "label": "derives",
+      "title": "JV specializes LV",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Selection",
+      "layer": "derive",
+      "description": "jsonb JV is the jsonb-cold specialization of VR LV.",
+      "files": [],
+      "evidence": [],
+      "style": "dashed",
+      "kind": "derive"
+    },
+    {
+      "id": "D:J:POL",
+      "from": "J:POL",
+      "to": "P1",
+      "label": "derives",
+      "title": "POL specializes P1",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Selection",
+      "layer": "derive",
+      "description": "jsonb POL is the jsonb-cold specialization of VR P1.",
+      "files": [],
+      "evidence": [],
+      "style": "dashed",
+      "kind": "derive"
+    },
+    {
+      "id": "D:J:SEL",
+      "from": "J:SEL",
+      "to": "C1",
+      "label": "derives",
+      "title": "SEL specializes C1",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Selection",
+      "layer": "derive",
+      "description": "jsonb SEL is the jsonb-cold specialization of VR C1.",
+      "files": [],
+      "evidence": [],
+      "style": "dashed",
+      "kind": "derive"
+    },
+    {
+      "id": "D:J:FLOOR",
+      "from": "J:FLOOR",
+      "to": "P1",
+      "label": "derives",
+      "title": "FLOOR specializes P1",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Selection",
+      "layer": "derive",
+      "description": "jsonb FLOOR is the jsonb-cold specialization of VR P1.",
+      "files": [],
+      "evidence": [],
+      "style": "dashed",
+      "kind": "derive"
+    },
+    {
+      "id": "D:J:K2",
+      "from": "J:K2",
+      "to": "K2",
+      "label": "derives",
+      "title": "K2 specializes K2",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Representation",
+      "layer": "derive",
+      "description": "jsonb K2 is the jsonb-cold specialization of VR K2.",
+      "files": [],
+      "evidence": [],
+      "style": "dashed",
+      "kind": "derive"
+    },
+    {
+      "id": "D:J:COLD",
+      "from": "J:COLD",
+      "to": "K2",
+      "label": "derives",
+      "title": "COLD specializes K2",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Representation",
+      "layer": "derive",
+      "description": "jsonb COLD is the jsonb-cold specialization of VR K2.",
+      "files": [],
+      "evidence": [],
+      "style": "dashed",
+      "kind": "derive"
+    },
+    {
+      "id": "D:J:FLAT",
+      "from": "J:FLAT",
+      "to": "N8",
+      "label": "derives",
+      "title": "FLAT specializes N8",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Representation",
+      "layer": "derive",
+      "description": "jsonb FLAT is the jsonb-cold specialization of VR N8.",
+      "files": [],
+      "evidence": [],
+      "style": "dashed",
+      "kind": "derive"
+    },
+    {
+      "id": "D:J:A1",
+      "from": "J:A1",
+      "to": "A1",
+      "label": "derives",
+      "title": "A1 specializes A1",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Admin",
+      "layer": "derive",
+      "description": "jsonb A1 is the jsonb-cold specialization of VR A1.",
+      "files": [],
+      "evidence": [],
+      "style": "dashed",
+      "kind": "derive"
+    },
+    {
+      "id": "UHE7",
+      "from": "C1",
+      "to": "UB7",
+      "label": "holds",
+      "title": "C1 holds the decoded-WAL invariant",
+      "status": "pass",
+      "rawStatus": "green",
+      "group": "Unsafe boundaries",
+      "layer": "vr",
+      "description": "construction gate enforces I-B: no unreadable VR in a decodable WAL range.",
+      "files": [
+        "src/backend/access/common/vr.c"
+      ],
+      "evidence": [],
+      "style": "solid",
+      "kind": "safety"
+    }
+  ]
+}

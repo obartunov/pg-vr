@@ -50,6 +50,13 @@ it does NOT trigger browser fullscreen.
     tooltip and details panel (e.g. jsonb SEL derives from VR C1; jsonb FLAT
     from VR N8; jsonb K2/A1 ARE the VR K2/A1).
 - `README.md` — this file.
+- `graph_data.json` — the curated data (you edit this).
+- `template.html` — the engine with a data placeholder.
+- `../../scripts/build_vr_graph.py` — embeds the data into the template to
+  produce `index.html`.
+
+`index.html` is generated from `template.html` + `graph_data.json`; see
+"How it is built" below.
 
 (Earlier drafts shipped a separate jsonb.html; it was folded into this one
 file for integrity — one engine, one dataset, no drift between pages.)
@@ -124,10 +131,38 @@ Two independent visual channels:
 - Edge DASH = readiness: solid = runtime-evidenced/accepted; dashed =
   accepted-v0 / partial; dotted = deferred.
 
+## How it is built (maintainability)
+
+`index.html` is GENERATED, not hand-edited. The maintained inputs are:
+
+- `graph_data.json` — the curated data (nodes, edges, groups, statuses,
+  evidence, source files, tip tree, blocker count). This is what you edit.
+- `template.html` — the engine (renderer, styles, interactions) with a
+  single `/*__GRAPH_DATA__*/` placeholder inside the
+  `<script id="graphData">` block.
+- `scripts/build_vr_graph.py` — embeds `graph_data.json` into
+  `template.html` and writes `index.html`, validating invariants.
+
+The generated `index.html` is still fully self-contained: the data is
+embedded at build time, so it opens directly from `file://` with no runtime
+`fetch()`, no npm, no backend, no network.
+
+Update workflow:
+
+    1. edit   docs/vr_graph/graph_data.json
+    2. run    python3 scripts/build_vr_graph.py
+    3. open   docs/vr_graph/index.html   (double-click; verify visually)
+    4. commit graph_data.json + template.html + the generated index.html
+
+The build is byte-reproducible: the same (template.html, graph_data.json)
+always produces the same index.html. The script refuses to write if any
+invariant fails (E1-E26, UB1-UB7, A1, FREEZE present; E25 = deferred;
+blocker count = 0; no stale "production policy TBD" / "full green requires
+M3"; no `requestFullscreen`; no external network reference).
+
 ## How to add or update a NODE
 
-Edit the `nodes` array inside the `<script id="graphData">` block. Node
-schema:
+Edit the `nodes` array in `graph_data.json` (NOT index.html). Node schema:
 
     {
       "id": "X1", "kind": "node", "label": "X1",
@@ -141,11 +176,11 @@ schema:
     }
 
 Keep the title to `id · name` and the body to the lifecycle meaning; do not
-duplicate the title in the body.
+duplicate the title in the body. Then re-run the build.
 
 ## How to add or update an EDGE
 
-Edit the `edges` array. Edge schema:
+Edit the `edges` array in `graph_data.json`. Edge schema:
 
     {
       "id": "E27", "from": "<nodeId>", "to": "<nodeId>", "label": "E27",
@@ -159,21 +194,23 @@ Edit the `edges` array. Edge schema:
       "style": "solid|dashed|dotted"
     }
 
-Edge color is derived from the transition kind by `edgeKind()` in the script;
-if a new edge id needs a specific kind, add it to the id lists in
-`edgeKind()`. Dash is derived from `status` in `renderEdge()`.
+Edge color is derived from the transition kind by `edgeKind()` in
+`template.html`; if a new edge id needs a specific kind, add it to the id
+lists in `edgeKind()` (a template change, then rebuild). Dash is derived
+from `status` in `renderEdge()`. Then re-run the build.
 
 ## How to update after a new lifecycle revision
 
 1. Update `VR_LIFECYCLE_GRAPH_V1.md` first — it is the source of truth.
-2. Reflect only the changed nodes/edges in the embedded JSON here.
-3. Update the header `meta` block (rev, tipCommit, tipTree) if the release
-   tip moved, and verify the tree hash against origin.
-4. Re-open `index.html` and re-run the acceptance checks in
-   `VR_LIFECYCLE_GRAPH_WEB_ARTIFACT_V0.md`.
+2. Reflect only the changed nodes/edges in `graph_data.json`.
+3. Update the `meta` block (revision, tipCommit, tipTree, blockerCount) if
+   the release tip moved, and verify the tree hash against origin.
+4. Run `python3 scripts/build_vr_graph.py` and open `index.html` to verify.
 
 The graph is a projection of the markdown; when they disagree, the markdown
-wins.
+wins. The build does NOT parse the markdown (deliberately avoided in v0 to
+keep parsing non-fragile); `graph_data.json` is the curated machine
+projection you maintain by hand.
 
 ## Source docs used
 
