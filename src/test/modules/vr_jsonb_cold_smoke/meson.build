@@ -34,6 +34,7 @@ tests += {
     'tests': [
       't/001_logical_gate.pl',
       't/015_rewrite_rehome_matrix.pl',
+      't/016_jsonb_consumer_matrix.pl',
     ],
   },
 }
