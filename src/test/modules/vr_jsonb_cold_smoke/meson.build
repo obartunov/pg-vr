@@ -33,6 +33,7 @@ tests += {
   'tap': {
     'tests': [
       't/001_logical_gate.pl',
+      't/015_rewrite_rehome_matrix.pl',
     ],
   },
 }
