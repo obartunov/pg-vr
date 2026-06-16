@@ -1315,20 +1315,22 @@ hr { border:0; border-top:1px solid var(--border); margin:14px 0; }
       "to": "N17",
       "label": "E20",
       "title": "reorderbuffer capture during logical decode / pgoutput guard",
-      "status": "partial",
-      "rawStatus": "active/partial",
-      "badge": "PARTIAL",
+      "status": "pass",
+      "rawStatus": "green",
+      "badge": "",
       "group": "Logical decode / replication",
-      "description": "Capture of a VR value for logical output happens during decode, not in walsender. walsender drives the logical loop but holds no VR logic; the relevant seam is reorderbuffer.c (vr_capture_logical_value, VARTAG_VR_INMEM) and proto.c / the decode path (VARATT_IS_EXTERNAL_VR output guard). class-S and class-U paths covered; general live-read semantics remain constrained and out of v0 freeze. Status partial; not implemented here.",
+      "description": "Closed, fail-closed logical capture/guard boundary. A persistent VR value on the logical decode/output path never crosses the boundary as a physical VR descriptor or stale locator; every VR attribute resolves to one of: (1) flatten-to-logical through the capture seam; (2) unchanged-column marker for pgoutput / class-U; (3) hard ERROR for unsupported consumers. Source: reorderbuffer.c ReorderBufferToastReplace - consumer_captures_vr pass-through (built-in REPACK worker), class-S stream-only reassembly -> VARTAG_VR_INMEM -> vr_capture_logical_value, consumer_marks_unchanged_vr marker arm, and hard ERROR for unsupported consumers; proto.c logicalrep_write_tuple serialization funnel - LOGICALREP_COLUMN_UNCHANGED marker and the residual VARATT_IS_VR hard-ERROR backstop; detoast.c - live-read flatten under logical decoding refused; pgrepack.c - vr_capture_logical_value before spill; single-assignment consumer flags (pgoutput.c, repack_worker.c). Pass means the boundary is closed/fail-closed; it does NOT mean arbitrary class-U live-read is implemented: general class-U live-read by an arbitrary datum-printing consumer remains deliberately refused (reorderbuffer.c hard ERROR + detoast.c funnel) and is a recorded future constraint. Status moved partial -> pass on source audit (VR_E20_LOGICAL_CAPTURE_BOUNDARY_V0) plus existing regression mapping, not by graph edit.",
       "files": [],
       "evidence": [
         "M1 class-S",
         "M2 class-U",
         "M3 C1 relaxation",
         "VR_V0_RELEASE_CANDIDATE_FREEZE",
-        "Frida runtime (tree 6583c64d, -O0 postgres): vr_capture_logical_value -> vr_jsonb_cold_flatten x3 — same provider as the read/detoast seam (E3), reached via methods->flatten through the capture/decode seam. Supports E20 scoping around reorderbuffer/capture + provider flatten dispatch; does NOT change E20 status (remains partial). Evidence/tooling, not CI."
+        "Frida runtime (tree 6583c64d, -O0 postgres; C identical at base 553d53be): vr_capture_logical_value -> vr_jsonb_cold_flatten x3 - the capture/decode seam reaches the provider flatten via methods->flatten. Evidence/tooling, not CI.",
+        "Regression mapping (existing): t/005 general refusal; t/007 detoast funnel + pgoutput wire backstop; t/008 class-S flatten; t/009 class-U marker; t/010 organic matrix; t/011 REPACK organic capture.",
+        "Status partial -> pass justified by source audit (VR_E20_LOGICAL_CAPTURE_BOUNDARY_V0) + existing regression mapping, not by graph edit."
       ],
-      "style": "dashed",
+      "style": "solid",
       "layer": "vr"
     },
     {
