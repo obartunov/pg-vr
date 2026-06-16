@@ -35,6 +35,7 @@ tests += {
       't/001_logical_gate.pl',
       't/015_rewrite_rehome_matrix.pl',
       't/016_jsonb_consumer_matrix.pl',
+      't/017_subxact_abort_rollback.pl',
     ],
   },
 }
