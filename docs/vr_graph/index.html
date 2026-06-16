@@ -330,7 +330,9 @@ hr { border:0; border-top:1px solid var(--border); margin:14px 0; }
         "vr_toast.c",
         "vr.c"
       ],
-      "evidence": [],
+      "evidence": [
+        "Frida runtime: methods->flatten provider dispatch resolved at runtime to vr_jsonb_cold_flatten from two lifecycle seams — read/detoast (E3) and capture/decode (E20). Confirms single provider via the policy methods table; not a new mechanism."
+      ],
       "layer": "vr"
     },
     {
@@ -391,7 +393,9 @@ hr { border:0; border-top:1px solid var(--border); margin:14px 0; }
         "heaptoast.c",
         "toast_helper.c"
       ],
-      "evidence": [],
+      "evidence": [
+        "Frida runtime (tree 6583c64d, -O0 postgres) cross-check: rewrite_heap_tuple -> raw_heap_insert x9 (VACUUM FULL/CLUSTER/REPACK over 3 rows; ALTER rewrite excluded, table_tuple_insert path) — matches gdb store-gate-net count."
+      ],
       "layer": "vr"
     },
     {
@@ -916,7 +920,9 @@ hr { border:0; border-top:1px solid var(--border); margin:14px 0; }
       "group": "Read path / flatten",
       "description": "both smoke suites: roundtrip equality, k1 extraction; capture fidelity capture(j)=j",
       "files": [],
-      "evidence": [],
+      "evidence": [
+        "Frida runtime (tree 6583c64d, -O0 postgres): vr_detoast_flatten -> vr_jsonb_cold_flatten x3 — indirect methods->flatten provider dispatch on the read/detoast seam. Cross-checks gdb; evidence/tooling, not CI."
+      ],
       "style": "solid",
       "layer": "vr"
     },
@@ -969,7 +975,8 @@ hr { border:0; border-top:1px solid var(--border); margin:14px 0; }
         "vr_toast.c"
       ],
       "evidence": [
-        "TAP 015"
+        "TAP 015",
+        "Frida runtime (tree 6583c64d, -O0 postgres) cross-check of VR_GRAPH_COMPILED_AUDIT_V0: vr_rewrite_action=24 via two call-sites (toast_tuple_init x12 + heap_toast_insert_or_update x12); vr_toast_body_copy_to_relation=12 — matches gdb."
       ],
       "style": "solid",
       "layer": "vr"
@@ -1318,7 +1325,8 @@ hr { border:0; border-top:1px solid var(--border); margin:14px 0; }
         "M1 class-S",
         "M2 class-U",
         "M3 C1 relaxation",
-        "VR_V0_RELEASE_CANDIDATE_FREEZE"
+        "VR_V0_RELEASE_CANDIDATE_FREEZE",
+        "Frida runtime (tree 6583c64d, -O0 postgres): vr_capture_logical_value -> vr_jsonb_cold_flatten x3 — same provider as the read/detoast seam (E3), reached via methods->flatten through the capture/decode seam. Supports E20 scoping around reorderbuffer/capture + provider flatten dispatch; does NOT change E20 status (remains partial). Evidence/tooling, not CI."
       ],
       "style": "dashed",
       "layer": "vr"
