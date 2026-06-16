@@ -53,7 +53,7 @@
     {
       "id": "Logical decode / replication",
       "title": "Logical decode / replication",
-      "status": "partial",
+      "status": "pass",
       "nodeCount": 3,
       "edgeCount": 8,
       "layer": "vr"
