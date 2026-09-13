@@ -16,7 +16,10 @@
 
 #include <limits.h>
 
+#include "access/detoast.h"
+#include "access/heaptoast.h"
 #include "access/htup_details.h"
+#include "access/toast_compression.h"
 #include "access/tupdesc.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
@@ -860,13 +863,388 @@ json_object_field(PG_FUNCTION_ARGS)
 		PG_RETURN_NULL();
 }
 
+/*
+ * Initial metadata read: a performance window for pglz, not a correctness
+ * limit.  The largest prefix whose worst case pglz_maximum_compressed_size()
+ * expansion, plus the compression header, still fits one TOAST chunk.
+ */
+#define JBS_METADATA_WINDOW \
+	((int) (((TOAST_OID_MAX_CHUNK_SIZE - sizeof(int32) - 2) * 8) / 9))
+
+typedef enum JbsResult
+{
+	JBS_FOUND,
+	JBS_ABSENT,
+	JBS_NEED_MORE,				/* *need_end bytes of prefix required */
+	JBS_DECLINE
+} JbsResult;
+
+/*
+ * Copy [offset, offset+len) of the raw value into dest.
+ *
+ * detoast_attr_slice() can return a short result, so verify its length before
+ * copying.
+ */
+static bool
+jbs_fetch(Datum doc, Size total, Size offset, Size len, void *dest)
+{
+	struct varlena *slice;
+
+	if (offset > total || len > total - offset)
+		return false;
+	if (len == 0)
+		return true;
+
+	slice = (struct varlena *) PG_DETOAST_DATUM_SLICE(doc, offset, len);
+	if (VARSIZE_ANY_EXHDR(slice) < len)
+	{
+		pfree(slice);
+		return false;
+	}
+	memcpy(dest, VARDATA_ANY(slice), len);
+	pfree(slice);
+
+	return true;
+}
+
+/*
+ * Offset of one entry within the data area, and its length, read the way
+ * getJsonbOffset() and getJsonbLength() read them out of a JsonbContainer.
+ * Both come from stored bytes and are used to address the buffer, so they are
+ * accumulated in Size and bounded against limit as they are summed: a damaged
+ * JEntry must fail here rather than wrap into a plausible offset.
+ */
+static bool
+jbs_entry_offset(const JEntry *children, int index, Size limit, Size *result)
+{
+	Size		offset = 0;
+	int			i;
+
+	for (i = index - 1; i >= 0; i--)
+	{
+		Size		fld = JBE_OFFLENFLD(children[i]);
+
+		if (fld > limit - offset)
+			return false;
+		offset += fld;
+
+		if (JBE_HAS_OFF(children[i]))
+			break;
+	}
+
+	*result = offset;
+
+	return true;
+}
+
+static bool
+jbs_entry_range(const JEntry *children, int index, Size limit,
+				Size *off, Size *len)
+{
+	Size		start;
+	Size		length;
+
+	if (!jbs_entry_offset(children, index, limit, &start))
+		return false;
+
+	if (JBE_HAS_OFF(children[index]))
+	{
+		Size		endoff = JBE_OFFLENFLD(children[index]);
+
+		if (endoff < start)
+			return false;
+		length = endoff - start;
+	}
+	else
+		length = JBE_OFFLENFLD(children[index]);
+
+	if (length > limit - start)
+		return false;
+
+	*off = start;
+	*len = length;
+
+	return true;
+}
+
+/*
+ * Look up a top-level key in an already fetched prefix of a jsonb value.
+ *
+ * JBS_NEED_MORE returns the exact prefix length needed to continue.
+ * JBS_FOUND returns the JsonbValue and, when it has payload bytes, their
+ * offset and length.
+ */
+static JbsResult
+jbs_parse(const char *buf, Size buflen, Size total,
+		  const char *key, int keylen,
+		  Size *need_end, Size *voff, Size *vlen, JsonbValue *out)
+{
+	uint32		hdr;
+	int			nkeys;
+	Size		jent_bytes;
+	Size		keys_bytes;
+	Size		data_start;
+	Size		data_limit;
+	Size		voffset;
+	Size		vlength;
+	const JEntry *children;
+	const char *keydata;
+	JEntry		ventry;
+	int			lo,
+				hi;
+	int			found = -1;
+
+	if (total < sizeof(uint32))
+		return JBS_DECLINE;
+	if (buflen < sizeof(uint32))
+	{
+		*need_end = sizeof(uint32);
+		return JBS_NEED_MORE;
+	}
+
+	memcpy(&hdr, buf, sizeof(uint32));
+
+	if ((hdr & JB_FOBJECT) == 0)
+		return JBS_DECLINE;
+	nkeys = (int) (hdr & JB_CMASK);
+	if (nkeys == 0)
+		return JBS_ABSENT;
+
+	jent_bytes = (Size) 2 * nkeys * sizeof(JEntry);
+	data_start = sizeof(uint32) + jent_bytes;
+	if (data_start > total)
+		return JBS_DECLINE;
+	data_limit = total - data_start;
+
+	if (buflen < data_start)
+	{
+		*need_end = data_start;
+		return JBS_NEED_MORE;
+	}
+
+	children = (const JEntry *) (buf + sizeof(uint32));
+
+	/* keys precede values, so the first value offset ends the key bytes */
+	if (!jbs_entry_offset(children, nkeys, data_limit, &keys_bytes))
+		return JBS_DECLINE;
+	if (buflen < data_start + keys_bytes)
+	{
+		*need_end = data_start + keys_bytes;
+		return JBS_NEED_MORE;
+	}
+
+	keydata = buf + data_start;
+
+	/* jsonb orders object keys by length first, then bytewise */
+	lo = 0;
+	hi = nkeys - 1;
+	while (lo <= hi)
+	{
+		int			mid = lo + (hi - lo) / 2;
+		Size		koffset;
+		Size		klength;
+		int			cmp;
+
+		if (!jbs_entry_range(children, mid, keys_bytes, &koffset, &klength))
+			return JBS_DECLINE;
+
+		if (klength == (Size) keylen)
+			cmp = memcmp(keydata + koffset, key, klength);
+		else
+			cmp = klength > (Size) keylen ? 1 : -1;
+
+		if (cmp == 0)
+		{
+			found = mid;
+			break;
+		}
+		else if (cmp < 0)
+			lo = mid + 1;
+		else
+			hi = mid - 1;
+	}
+
+	if (found < 0)
+		return JBS_ABSENT;
+
+	if (!jbs_entry_range(children, nkeys + found, data_limit,
+						 &voffset, &vlength))
+		return JBS_DECLINE;
+
+	/* containers are not handled by the sliced path */
+	ventry = children[nkeys + found];
+	if (JBE_ISSTRING(ventry))
+		out->type = jbvString;
+	else if (JBE_ISBOOL_TRUE(ventry) || JBE_ISBOOL_FALSE(ventry) ||
+			 JBE_ISNULL(ventry))
+	{
+		/* booleans and nulls are completely described by their JEntry */
+		if (vlength != 0)
+			return JBS_DECLINE;
+		out->type = JBE_ISNULL(ventry) ? jbvNull : jbvBool;
+		out->val.boolean = JBE_ISBOOL_TRUE(ventry);
+	}
+	else if (JBE_ISNUMERIC(ventry))
+	{
+		/*
+		 * Numeric payload is INTALIGN'd relative to the data area, and the
+		 * JEntry length covers the padding, so the stored offset is enough to
+		 * reproduce where fillJsonbValue() would have read it.
+		 */
+		Size		pad = INTALIGN(voffset) - voffset;
+
+		if (vlength < pad)
+			return JBS_DECLINE;
+		voffset += pad;
+		vlength -= pad;
+		out->type = jbvNumeric;
+	}
+	else
+		return JBS_DECLINE;
+
+	*voff = data_start + voffset;
+	*vlen = vlength;
+
+	return JBS_FOUND;
+}
+
+static JbsResult
+jsonb_object_field_sliced(Datum doc, text *key, JsonbValue *out)
+{
+	struct varlena *orig = (struct varlena *) DatumGetPointer(doc);
+	ToastCompressionId cmid;
+	char	   *buf;
+	char	   *vdata;
+	Size		total;
+	Size		buflen;
+	Size		need_end = 0;
+	Size		voff = 0;
+	Size		vlen = 0;
+	JbsResult	res;
+	int			tries;
+
+	/* an inline datum has already been read in full */
+	if (!VARATT_IS_EXTERNAL_ONDISK(orig))
+		return JBS_DECLINE;
+
+	/*
+	 * detoast_attr_slice() can bound how much of the stored value it fetches
+	 * only for pglz, where pglz_maximum_compressed_size() answers how many
+	 * compressed bytes a prefix needs.  For any other method it fetches the
+	 * whole value and decompresses all of it, so each read below would cost a
+	 * full detoast and this path would be slower than the ordinary one.
+	 */
+	cmid = toast_get_compression_id(orig);
+	if (cmid != TOAST_INVALID_COMPRESSION_ID &&
+		cmid != TOAST_PGLZ_COMPRESSION_ID)
+		return JBS_DECLINE;
+
+	total = toast_raw_datum_size(doc);
+	if (total < VARHDRSZ)
+		return JBS_DECLINE;
+	total -= VARHDRSZ;
+
+	buflen = Min(total, (Size) JBS_METADATA_WINDOW);
+	buf = palloc(buflen > 0 ? buflen : 1);
+	if (!jbs_fetch(doc, total, 0, buflen, buf))
+	{
+		pfree(buf);
+		return JBS_DECLINE;
+	}
+
+	/*
+	 * Three attempts at most: the window, then an extension to the end of the
+	 * JEntry array, then one to the end of the key bytes.  Each end is exact,
+	 * so a further JBS_NEED_MORE could not make progress.
+	 */
+	for (tries = 0; tries < 3; tries++)
+	{
+		res = jbs_parse(buf, buflen, total, VARDATA_ANY(key),
+						VARSIZE_ANY_EXHDR(key), &need_end, &voff, &vlen, out);
+		if (res != JBS_NEED_MORE)
+			break;
+
+		/* on the last attempt there is nothing left to read the prefix for */
+		if (tries == 2 || need_end <= buflen || need_end > total)
+		{
+			res = JBS_DECLINE;
+			break;
+		}
+
+		pfree(buf);
+		buflen = need_end;
+		buf = palloc(buflen);
+		if (!jbs_fetch(doc, total, 0, buflen, buf))
+		{
+			res = JBS_DECLINE;
+			break;
+		}
+	}
+
+	/* a boolean or a JSON null is already complete */
+	if (res == JBS_FOUND &&
+		(out->type == jbvString || out->type == jbvNumeric))
+	{
+		/*
+		 * Copy the value out rather than point into the prefix buffer, which
+		 * also gives a numeric the four-byte alignment it requires.
+		 */
+		vdata = palloc(vlen > 0 ? vlen : 1);
+
+		if (voff + vlen <= buflen)
+			memcpy(vdata, buf + voff, vlen);	/* already read */
+		else if (!jbs_fetch(doc, total, voff, vlen, vdata))
+		{
+			pfree(vdata);
+			pfree(buf);
+			return JBS_DECLINE;
+		}
+
+		if (out->type == jbvNumeric)
+		{
+			/* the length came from stored bytes; cross-check the header */
+			if (vlen < VARHDRSZ || VARSIZE_ANY(vdata) > vlen ||
+				VARSIZE_ANY(vdata) < VARHDRSZ)
+			{
+				pfree(vdata);
+				pfree(buf);
+				return JBS_DECLINE;
+			}
+			out->val.numeric = (Numeric) vdata;
+		}
+		else
+		{
+			out->val.string.val = vdata;
+			out->val.string.len = (int) vlen;
+		}
+	}
+
+	pfree(buf);
+
+	return res;
+}
+
 Datum
 jsonb_object_field(PG_FUNCTION_ARGS)
 {
-	Jsonb	   *jb = PG_GETARG_JSONB_P(0);
 	text	   *key = PG_GETARG_TEXT_PP(1);
+	JsonbValue	sliced;
+	Jsonb	   *jb;
 	JsonbValue *v;
 	JsonbValue	vbuf;
+
+	/* try to answer without materialising the datum */
+	switch (jsonb_object_field_sliced(PG_GETARG_DATUM(0), key, &sliced))
+	{
+		case JBS_FOUND:
+			PG_RETURN_JSONB_P(JsonbValueToJsonb(&sliced));
+		case JBS_ABSENT:
+			PG_RETURN_NULL();
+		default:
+			break;
+	}
+
+	jb = PG_GETARG_JSONB_P(0);
 
 	if (!JB_ROOT_IS_OBJECT(jb))
 		PG_RETURN_NULL();
@@ -901,10 +1279,25 @@ json_object_field_text(PG_FUNCTION_ARGS)
 Datum
 jsonb_object_field_text(PG_FUNCTION_ARGS)
 {
-	Jsonb	   *jb = PG_GETARG_JSONB_P(0);
 	text	   *key = PG_GETARG_TEXT_PP(1);
+	JsonbValue	sliced;
+	Jsonb	   *jb;
 	JsonbValue *v;
 	JsonbValue	vbuf;
+
+	switch (jsonb_object_field_sliced(PG_GETARG_DATUM(0), key, &sliced))
+	{
+		case JBS_FOUND:
+			if (sliced.type == jbvNull)
+				PG_RETURN_NULL();
+			PG_RETURN_TEXT_P(JsonbValueAsText(&sliced));
+		case JBS_ABSENT:
+			PG_RETURN_NULL();
+		default:
+			break;
+	}
+
+	jb = PG_GETARG_JSONB_P(0);
 
 	if (!JB_ROOT_IS_OBJECT(jb))
 		PG_RETURN_NULL();

@@ -1,0 +1,182 @@
+--
+-- JSONB field access on out-of-line values
+--
+-- Check jsonb -> key and ->> key against the ordinary extraction path for
+-- values and layouts handled by the sliced path, and for its fallback cases.
+--
+CREATE FUNCTION jsonb_toast_doc(filler int) RETURNS jsonb
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT jsonb_build_object(
+           'str', 'a string',
+           'num', 42,
+           'neg', -0.5,
+           'big', 12345678901234567890123456789::numeric,
+           'yes', true,
+           'no', false,
+           'nul', null::jsonb,
+           'obj', jsonb_build_object('a', 1),
+           'arr', jsonb_build_array(1, 2),
+           'empty_obj', '{}'::jsonb,
+           '', 'empty key',
+           repeat('L', 2000), 'long key',
+           'pad', (SELECT string_agg(md5((g / 8)::text), '')
+                     FROM generate_series(1, filler) g))
+$$;
+CREATE TABLE jsonb_toast_ext (kind text, j jsonb);
+CREATE TABLE jsonb_toast_raw (kind text, j jsonb);
+ALTER TABLE jsonb_toast_raw ALTER COLUMN j SET STORAGE EXTERNAL;
+-- pin the compression method: the sliced path is taken for pglz and for
+-- uncompressed values, and declines for anything else, so leaving this to
+-- default_toast_compression would silently test only the fallback
+ALTER TABLE jsonb_toast_ext ALTER COLUMN j SET COMPRESSION pglz;
+-- out of line and compressed, out of line and not compressed, and a small one
+INSERT INTO jsonb_toast_ext VALUES ('compressed', jsonb_toast_doc(1000));
+INSERT INTO jsonb_toast_raw VALUES ('uncompressed', jsonb_toast_doc(1000));
+INSERT INTO jsonb_toast_ext VALUES ('small', jsonb_toast_doc(1));
+-- the sliced path is reached only for a value stored out of line, so check
+-- that the fixtures are, rather than assuming it from their size
+SELECT kind, pg_column_compression(j) AS compression,
+       pg_column_toast_chunk_id(j) IS NOT NULL AS out_of_line
+  FROM jsonb_toast_ext UNION ALL
+SELECT kind, pg_column_compression(j), pg_column_toast_chunk_id(j) IS NOT NULL
+  FROM jsonb_toast_raw
+  ORDER BY 1;
+     kind     | compression | out_of_line 
+--------------+-------------+-------------
+ compressed   | pglz        | t
+ small        | pglz        | f
+ uncompressed |             | t
+(3 rows)
+
+-- every key, both operators, against the ordinary path
+SELECT t.kind, k.key,
+       (t.j -> k.key) IS NOT DISTINCT FROM jsonb_extract_path(t.j, k.key) AS get_ok,
+       (t.j ->> k.key) IS NOT DISTINCT FROM jsonb_extract_path_text(t.j, k.key) AS text_ok
+  FROM (SELECT * FROM jsonb_toast_ext UNION ALL SELECT * FROM jsonb_toast_raw) t,
+       (VALUES ('str'), ('num'), ('neg'), ('big'), ('yes'), ('no'), ('nul'),
+               ('obj'), ('arr'), ('empty_obj'), (''), ('absent')) k(key)
+ ORDER BY 1, 2;
+     kind     |    key    | get_ok | text_ok 
+--------------+-----------+--------+---------
+ compressed   |           | t      | t
+ compressed   | absent    | t      | t
+ compressed   | arr       | t      | t
+ compressed   | big       | t      | t
+ compressed   | empty_obj | t      | t
+ compressed   | neg       | t      | t
+ compressed   | no        | t      | t
+ compressed   | nul       | t      | t
+ compressed   | num       | t      | t
+ compressed   | obj       | t      | t
+ compressed   | str       | t      | t
+ compressed   | yes       | t      | t
+ small        |           | t      | t
+ small        | absent    | t      | t
+ small        | arr       | t      | t
+ small        | big       | t      | t
+ small        | empty_obj | t      | t
+ small        | neg       | t      | t
+ small        | no        | t      | t
+ small        | nul       | t      | t
+ small        | num       | t      | t
+ small        | obj       | t      | t
+ small        | str       | t      | t
+ small        | yes       | t      | t
+ uncompressed |           | t      | t
+ uncompressed | absent    | t      | t
+ uncompressed | arr       | t      | t
+ uncompressed | big       | t      | t
+ uncompressed | empty_obj | t      | t
+ uncompressed | neg       | t      | t
+ uncompressed | no        | t      | t
+ uncompressed | nul       | t      | t
+ uncompressed | num       | t      | t
+ uncompressed | obj       | t      | t
+ uncompressed | str       | t      | t
+ uncompressed | yes       | t      | t
+(36 rows)
+
+-- a key long enough that the key area reaches past the first metadata read
+SELECT kind,
+       (j -> repeat('L', 2000)) IS NOT DISTINCT FROM
+       jsonb_extract_path(j, repeat('L', 2000)) AS get_ok,
+       (j ->> repeat('L', 2000)) IS NOT DISTINCT FROM
+       jsonb_extract_path_text(j, repeat('L', 2000)) AS text_ok
+  FROM (SELECT * FROM jsonb_toast_ext UNION ALL SELECT * FROM jsonb_toast_raw) t
+ ORDER BY 1;
+     kind     | get_ok | text_ok 
+--------------+--------+---------
+ compressed   | t      | t
+ small        | t      | t
+ uncompressed | t      | t
+(3 rows)
+
+-- values, so the expected output is readable and not only a set of booleans
+SELECT j -> 'str' AS str, j -> 'num' AS num, j -> 'neg' AS neg,
+       j -> 'yes' AS yes, j -> 'no' AS no, j -> 'nul' AS nul,
+       j -> 'obj' AS obj, j -> 'arr' AS arr
+  FROM jsonb_toast_ext WHERE kind = 'compressed';
+    str     | num | neg  | yes  |  no   | nul  |   obj    |  arr   
+------------+-----+------+------+-------+------+----------+--------
+ "a string" | 42  | -0.5 | true | false | null | {"a": 1} | [1, 2]
+(1 row)
+
+SELECT j ->> 'str' AS str, j ->> 'num' AS num, j ->> 'big' AS big,
+       j ->> 'yes' AS yes, j ->> 'nul' AS nul, j ->> '' AS empty_key
+  FROM jsonb_toast_ext WHERE kind = 'compressed';
+   str    | num |              big              | yes  | nul | empty_key 
+----------+-----+-------------------------------+------+-----+-----------
+ a string | 42  | 12345678901234567890123456789 | true |     | empty key
+(1 row)
+
+-- a JSON null is not an absent key, and ->> turns only the first into NULL
+SELECT jsonb_typeof(j -> 'nul') AS nul_type,
+       (j -> 'nul') IS NULL AS get_nul_is_null,
+       (j ->> 'nul') IS NULL AS text_nul_is_null,
+       (j -> 'absent') IS NULL AS get_absent_is_null,
+       (j ->> 'absent') IS NULL AS text_absent_is_null
+  FROM jsonb_toast_ext WHERE kind = 'compressed';
+ nul_type | get_nul_is_null | text_nul_is_null | get_absent_is_null | text_absent_is_null 
+----------+-----------------+------------------+--------------------+---------------------
+ null     | f               | t                | t                  | t
+(1 row)
+
+-- numerics land at several alignments inside the value area
+CREATE TABLE jsonb_toast_align (n int, j jsonb);
+ALTER TABLE jsonb_toast_align ALTER COLUMN j SET COMPRESSION pglz;
+INSERT INTO jsonb_toast_align
+SELECT n, jsonb_build_object('a', repeat('x', n), 'num', 918273.5::numeric,
+         'pad', (SELECT string_agg(md5((g / 8)::text), '')
+                   FROM generate_series(1, 1000) g))
+  FROM generate_series(0, 7) n;
+SELECT count(*) AS cases,
+       count(*) FILTER (WHERE NOT ok) AS mismatches,
+       count(*) FILTER (WHERE pg_column_toast_chunk_id(j) IS NULL) AS inline
+  FROM (SELECT j, (j -> 'num') IS NOT DISTINCT FROM jsonb_extract_path(j, 'num')
+           AND (j ->> 'num') IS NOT DISTINCT FROM jsonb_extract_path_text(j, 'num') AS ok
+          FROM jsonb_toast_align) s;
+ cases | mismatches | inline 
+-------+------------+--------
+     8 |          0 |      0
+(1 row)
+
+-- a top-level array, and a scalar at the root, are not objects
+CREATE TABLE jsonb_toast_root (kind text, j jsonb);
+ALTER TABLE jsonb_toast_root ALTER COLUMN j SET COMPRESSION pglz;
+INSERT INTO jsonb_toast_root
+SELECT 'array', jsonb_agg(md5((g / 8)::text)) FROM generate_series(1, 1000) g;
+INSERT INTO jsonb_toast_root
+SELECT 'scalar', to_jsonb(string_agg(md5((g / 8)::text), ''))
+  FROM generate_series(1, 1000) g;
+SELECT kind, pg_column_toast_chunk_id(j) IS NOT NULL AS out_of_line,
+       (j -> 'str') IS NOT DISTINCT FROM jsonb_extract_path(j, 'str') AS get_ok,
+       (j ->> 'str') IS NOT DISTINCT FROM jsonb_extract_path_text(j, 'str') AS text_ok
+  FROM jsonb_toast_root ORDER BY 1;
+  kind  | out_of_line | get_ok | text_ok 
+--------+-------------+--------+---------
+ array  | t           | t      | t
+ scalar | t           | t      | t
+(2 rows)
+
+DROP TABLE jsonb_toast_ext, jsonb_toast_raw, jsonb_toast_align, jsonb_toast_root;
+DROP FUNCTION jsonb_toast_doc(int);
